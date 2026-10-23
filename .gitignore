@@ -2,3 +2,8 @@ node_modules/
 *.exe
 *.zip
 *.db
+*.db-shm
+*.db-wal
+data/images/
+data/docs/*
+!data/docs/.gitkeep

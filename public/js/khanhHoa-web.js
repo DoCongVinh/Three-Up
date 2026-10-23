@@ -13,16 +13,17 @@
  */
 (() => {
   "use strict";
+  // Không ghi đè bridge Electron hoặc bridge web đã khởi tạo.
+  if (window.khanhHoa?.isDesktop || window.khanhHoa?.isWebServer) return;
 
   const API_BASE = window.KHANHHOA_API_BASE || "/api";
   const STORAGE_KEY = "khanhhoa.web.session";
   const DEVICE_KEY = "khanhhoa.web.deviceToken";
 
-  /** Các kênh app.js dùng mà bản web chưa hỗ trợ (ảnh, hộp thoại desktop). */
+  /** Chỉ kênh native picker bị cấm; các kênh còn lại chạy qua /api/rpc. */
   const UNSUPPORTED = {
-    "dialog:pickImages": "Chọn ảnh từ máy chỉ có trên bản desktop. Trên web hãy dùng nút chụp/chọn ảnh của trình duyệt.",
-    "image:save": "Tải ảnh lên chỉ có trên bản desktop.",
-    "image:url": "Ảnh đính kèm chưa hỗ trợ trên web.",
+    "dialog:pickImages": "Chọn ảnh bằng nút tải tệp của trình duyệt.",
+    "image:save": "Tải ảnh bằng window.khanhHoa.uploadImage().",
   };
 
   /* ------------------------------- Session -------------------------------- */
@@ -42,32 +43,46 @@
       localStorage.removeItem(STORAGE_KEY);
     },
     token() {
-      return this.get()?.token || "";
+      const saved = this.get();
+      return saved?.sessionId || saved?.token || "";
     },
   };
 
   /** Mã thiết bị của người dân — để nhận đúng sự kiện 'feedback-confirmed'. */
   const device = {
     get() {
-      let token = localStorage.getItem(DEVICE_KEY);
-      if (!token) {
-        token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-        localStorage.setItem(DEVICE_KEY, token);
-      }
-      return token;
+      try {
+        let token = localStorage.getItem(DEVICE_KEY);
+        if (!token && globalThis.crypto?.randomUUID) {
+          token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+          localStorage.setItem(DEVICE_KEY, token);
+        }
+        return token || "";
+      } catch { return ""; }
     },
     set(token) {
-      if (token) localStorage.setItem(DEVICE_KEY, token);
+      if (token) { try { localStorage.setItem(DEVICE_KEY, token); } catch { /* storage có thể bị tắt */ } }
     },
   };
 
+  function getSessionDeviceToken() {
+    try {
+      let token = localStorage.getItem(DEVICE_KEY);
+      if (!token && window.crypto?.randomUUID) {
+        token = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+        localStorage.setItem(DEVICE_KEY, token);
+      }
+      return token || "";
+    } catch { return ""; }
+  }
+
   /* --------------------------------- REST --------------------------------- */
 
-  async function request(path, { method = "GET", body, auth = false } = {}) {
-    const headers = { Accept: "application/json" };
+  async function request(path, { method = "GET", body, auth = false, headers: extraHeaders = {} } = {}) {
+    const headers = { Accept: "application/json", ...extraHeaders };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    if (auth) headers.Authorization = `Bearer ${session.token()}`;
-    headers["X-Device-Token"] = device.get();
+    if (auth && session.token()) headers.Authorization = `Bearer ${session.token()}`;
+    if (getSessionDeviceToken()) headers["X-Device-Token"] = getSessionDeviceToken();
 
     try {
       const response = await fetch(`${API_BASE}${path}`, {
@@ -99,13 +114,22 @@
     ready: false,
 
     connect() {
-      if (this.socket || typeof io !== "function") return this.socket;
-      this.socket = io({ auth: { token: window.KHANHHOA_SOCKET_TOKEN || undefined } });
+      if (this.socket) return this.socket;
+      if (typeof window.io !== "function") return null;
+      this.socket = window.io({
+        auth: {
+          role: session.token() ? "officer" : "citizen",
+          sessionId: session.token(),
+          token: window.KHANHHOA_SOCKET_TOKEN || undefined,
+          deviceToken: getSessionDeviceToken() || undefined,
+        },
+      });
       this.socket.on("connect", () => {
         this.ready = true;
         const token = session.token();
-        if (token) this.socket.emit("officer:subscribe", { token });
-        this.socket.emit("citizen:subscribe", { deviceToken: device.get() });
+        if (token) this.socket.emit("officer:subscribe", { sessionId: token });
+        const deviceToken = getSessionDeviceToken();
+        if (deviceToken) this.socket.emit("citizen:subscribe", { deviceToken });
       });
       this.socket.on("disconnect", () => {
         this.ready = false;
@@ -117,8 +141,9 @@
     subscribe() {
       if (!this.socket) return;
       const token = session.token();
-      if (token) this.socket.emit("officer:subscribe", { token });
-      this.socket.emit("citizen:subscribe", { deviceToken: device.get() });
+      if (token) this.socket.emit("officer:subscribe", { sessionId: token });
+      const deviceToken = getSessionDeviceToken();
+      if (deviceToken) this.socket.emit("citizen:subscribe", { deviceToken });
     },
 
     on(event, handler) {
@@ -132,14 +157,15 @@
     "auth:login": ({ username, password }) =>
       request("/auth/login", { method: "POST", body: { username, password } }).then((result) => {
         if (result.ok) {
-          session.save({ token: result.token, user: result.user });
+          session.save({ token: result.token || result.sessionId, sessionId: result.sessionId || result.token, user: result.user });
+          realtime.connect();
           realtime.subscribe();
         }
         return result;
       }),
 
     "auth:logout": () =>
-      request("/auth/logout", { method: "POST", auth: true }).then((result) => {
+      request("/auth/logout", { method: "POST", auth: true, body: {} }).then((result) => {
         session.clear();
         return result;
       }),
@@ -148,40 +174,59 @@
       if (!session.token()) return Promise.resolve({ ok: false, code: "UNAUTHENTICATED", errors: ["Chưa đăng nhập."] });
       return request("/auth/me", { auth: true });
     },
+    "auth:changePassword": (payload) => request("/auth/change-password", { method: "POST", body: payload, auth: true }),
 
-    "feedback:submit": (payload) => request("/feedbacks", { method: "POST", body: payload }),
+    "feedback:submit": (payload) => request("/rpc/feedback:submit", { method: "POST", body: payload }).then((result) => {
+      if (result.ok && result.deviceToken) device.set(result.deviceToken);
+      realtime.subscribe();
+      return result;
+    }),
 
-    "feedback:list": ({ status } = {}) =>
-      request(`/feedbacks?status=${encodeURIComponent(status || "all")}`, { auth: true }),
-
-    "feedback:review": ({ feedbackId, status, note }) =>
-      status === "approved"
-        ? request(`/feedbacks/${encodeURIComponent(feedbackId)}/confirm`, { method: "POST", body: { note }, auth: true })
-        : request(`/feedbacks/${encodeURIComponent(feedbackId)}/reject`, { method: "POST", body: { reason: note }, auth: true }),
-
+    "feedback:list": ({ status, ...payload } = {}) => request(`/rpc/feedback:list`, { method: "POST", body: { ...payload, status }, auth: true }),
+    "feedback:review": (payload) => request("/rpc/feedback:review", { method: "POST", body: payload, auth: true }),
+    "feedback:extendDisplay": (payload) => request("/rpc/feedback:extendDisplay", { method: "POST", body: payload, auth: true }),
+    "feedback:setPermanent": (payload) => request("/rpc/feedback:setPermanent", { method: "POST", body: payload, auth: true }),
+    "feedback:origin": (payload) => request("/rpc/feedback:origin", { method: "POST", body: payload, auth: true }),
     "feedback:publicLocations": () => request("/public-locations"),
-
     "regions:units": () => request("/regions"),
-
-    "directory:regions": () =>
-      request("/regions").then((result) =>
-        result.ok ? { ok: true, regions: result.regions, categories: result.categories } : result,
-      ),
-
-    "device:myFeedbackIds": () => request("/my-feedbacks"),
-
-    "device:myFeedbacks": () => request("/my-feedbacks"),
+    "directory:regions": () => request("/rpc/directory:regions", { method: "POST", body: {} }),
+    "directory:wards": () => request("/wards"),
+    "directory:statistics": (payload) => request("/rpc/directory:statistics", { method: "POST", body: payload, auth: true }),
+    "categories:list": () => request("/categories"),
+    "categories:create": (payload) => request("/rpc/categories:create", { method: "POST", body: payload, auth: true }),
+    "categories:update": (payload) => request("/rpc/categories:update", { method: "POST", body: payload, auth: true }),
+    "categories:delete": (payload) => request("/rpc/categories:delete", { method: "POST", body: payload, auth: true }),
+    "regions:create": (payload) => request("/rpc/regions:create", { method: "POST", body: payload, auth: true }),
+    "regions:update": (payload) => request("/rpc/regions:update", { method: "POST", body: payload, auth: true }),
+    "regions:delete": (payload) => request("/rpc/regions:delete", { method: "POST", body: payload, auth: true }),
+    "device:register": (payload) => request("/rpc/device:register", { method: "POST", body: payload }),
+    "device:myFeedbackIds": (payload) => request("/rpc/device:myFeedbacks", { method: "POST", body: payload }),
+    "device:myFeedbacks": (payload) => request("/rpc/device:myFeedbacks", { method: "POST", body: payload }),
+    "image:url": (payload) => request("/rpc/image:url", { method: "POST", body: payload }),
+    "app:info": () => request("/health"),
+    "dashboard:summary": (payload) => request("/rpc/dashboard:summary", { method: "POST", body: payload, auth: true }),
+    "accounts:list": (payload) => request("/rpc/accounts:list", { method: "POST", body: payload, auth: true }),
+    "accounts:create": (payload) => request("/rpc/accounts:create", { method: "POST", body: payload, auth: true }),
+    "accounts:setActive": (payload) => request("/rpc/accounts:setActive", { method: "POST", body: payload, auth: true }),
+    "accounts:update": (payload) => request("/rpc/accounts:update", { method: "POST", body: payload, auth: true }),
+    "accounts:resetPassword": (payload) => request("/rpc/accounts:resetPassword", { method: "POST", body: payload, auth: true }),
+    "notifications:list": (payload) => request("/rpc/notifications:list", { method: "POST", body: payload, auth: true }),
+    "notifications:read": (payload) => request("/rpc/notifications:read", { method: "POST", body: payload, auth: true }),
+    "notifications:readAll": (payload) => request("/rpc/notifications:readAll", { method: "POST", body: payload, auth: true }),
+    "notifications:remindReviewers": (payload) => request("/rpc/notifications:remindReviewers", { method: "POST", body: payload, auth: true }),
+    "notifications:requestUpdate": (payload) => request("/rpc/notifications:requestUpdate", { method: "POST", body: payload, auth: true }),
+    "profile:update": (payload) => request("/rpc/profile:update", { method: "POST", body: payload, auth: true }),
+    "image:url": (payload) => request("/rpc/image:url", { method: "POST", body: payload }),
   };
 
   async function handleRequest(channel, payload = {}) {
-    if (UNSUPPORTED[channel]) {
-      return { ok: false, code: "UNSUPPORTED_ON_WEB", errors: [UNSUPPORTED[channel]] };
-    }
+    if (UNSUPPORTED[channel]) return { ok: false, code: "UNSUPPORTED_ON_WEB", errors: [UNSUPPORTED[channel]] };
     const handler = routes[channel];
-    if (!handler) {
-      return { ok: false, code: "UNKNOWN_CHANNEL", errors: [`Kênh chưa hỗ trợ trên bản web: ${channel}`] };
-    }
-    return handler(payload);
+    if (handler) return handler(payload);
+    // All remaining AppService/IPC channels use the server's authenticated RPC adapter.
+    const publicChannels = new Set(["feedback:submit", "feedback:publicLocations", "directory:regions", "directory:wards", "directory:statistics", "regions:units", "device:register", "device:myFeedbacks", "feedback:origin"]);
+    const auth = !publicChannels.has(channel);
+    return request(`/rpc/${encodeURIComponent(channel)}`, { method: "POST", body: payload, auth });
   }
 
   const STATUS_LABEL = { pending: "Chờ xác minh", approved: "Đã xác nhận", rejected: "Từ chối" };
@@ -195,25 +240,42 @@
 
   /** Chuyển kết quả nghiệp vụ sang dạng app.js đang mong đợi. */
   const compatRoutes = {
-    "feedback:list": (payload) =>
-      request(`/feedbacks?status=${encodeURIComponent(payload.status || "all")}`, { auth: true }).then((result) =>
-        result.ok ? { ...result, feedbacks: (result.feedbacks || []).map(toClientFeedback) } : result,
-      ),
-
-    "device:myFeedbacks": () =>
-      request("/my-feedbacks").then((result) =>
-        result.ok ? { ...result, feedbacks: (result.feedbacks || []).map(toClientFeedback) } : result,
-      ),
+    "feedback:list": (payload = {}) => request("/rpc/feedback:list", { method: "POST", body: payload, auth: true }).then((result) =>
+      result.ok ? { ...result, feedbacks: (result.feedbacks || []).map(toClientFeedback) } : result),
+    "device:myFeedbacks": (payload = {}) => request("/rpc/device:myFeedbacks", { method: "POST", body: payload }).then((result) =>
+      result.ok ? { ...result, feedbacks: (result.feedbacks || []).map(toClientFeedback) } : result),
   };
+
+  async function uploadImage(file, pendingId = "") {
+    if (!(file instanceof Blob)) return { ok: false, errors: ["Tệp ảnh không hợp lệ."] };
+    const query = pendingId ? `?pendingId=${encodeURIComponent(pendingId)}` : "";
+    try {
+      const headers = { "Content-Type": file.type };
+      if (session.token()) headers.Authorization = `Bearer ${session.token()}`;
+      const response = await fetch(`${API_BASE}/images${query}`, { method: "POST", headers, body: file, credentials: "same-origin" });
+      const data = await response.json().catch(() => ({}));
+      return response.ok ? data : { ok: false, errors: [data.error || "Không tải được ảnh."] };
+    } catch (error) { return { ok: false, errors: [error.message || "Không tải được ảnh."] }; }
+  }
 
   window.khanhHoa = {
     isDesktop: false,
+    isWebServer: true,
     platform: "web",
-    request: (channel, payload = {}) => (compatRoutes[channel] || handleRequest)(channel, payload),
+    request: (channel, payload = {}) => (compatRoutes[channel] || routes[channel] || ((p) => handleRequest(channel, p)))(payload),
     channels: () => Object.keys(routes).concat(Object.keys(compatRoutes), Object.keys(UNSUPPORTED)),
-    // Tiện ích cho trang tùy biến / trang cán bộ thời gian thực.
     socket: () => realtime.connect(),
     onRealtime: (event, handler) => realtime.on(event, handler),
+    uploadImage,
+    publicLocations: async () => { const result = await request("/public-locations"); return result.ok ? result.locations : []; },
+    restoreSession: async () => {
+      const saved = session.get();
+      if (!saved?.sessionId && !saved?.token) return null;
+      const result = await request("/auth/me", { auth: true });
+      if (!result.ok) { session.clear(); return null; }
+      saved.user = result.user; saved.sessionId = saved.sessionId || saved.token; session.save(saved); realtime.connect();
+      return saved;
+    },
     session,
     device,
   };

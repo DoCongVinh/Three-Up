@@ -15,6 +15,7 @@
     "sync:web": "node scripts/sync-web.mjs",
     "check:web": "node scripts/check-web.mjs",
     "test:web": "node scripts/e2e-web.mjs",
+    "import:web": "node scripts/import-desktop-data.mjs",
     "test": "node --test \"tests/unit/*.test.js\"",
     "test:watch": "node --test --watch \"tests/unit/*.test.js\"",
     "icon": "node scripts/generate-icon.mjs",

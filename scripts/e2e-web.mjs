@@ -23,6 +23,7 @@ const server = await startWebServer({
   host: "127.0.0.1",
   dbPath: join(dir, "test.db"),
   seedDemo: false,
+  importJson: false,
 });
 // port 0 -> cổng thật nằm trên httpServer.
 const { port } = server.httpServer.address();
@@ -80,9 +81,22 @@ try {
   check("Đăng nhập admin thành công", login.body.ok === true && !!login.body.token);
   check("Không trả password hash", !JSON.stringify(login.body).includes("scrypt$"));
 
-  const officer = connect(base, { auth: { role: "officer", token: login.body.token }, transports: ["websocket"] });
+  const account = await json("/api/rpc/accounts:create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${login.body.token}` },
+    body: JSON.stringify({ username: "testcb", password: "Test1234", displayName: "Cán bộ kiểm thử", wardId: "nt_nhatrang" }),
+  });
+  check("Admin tạo cán bộ cho phường kiểm thử", account.body.ok === true, account.body.errors?.[0] || "");
+  const officerLogin = await json("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "testcb", password: "Test1234" }),
+  });
+  check("Cán bộ phường đăng nhập", officerLogin.body.ok === true, officerLogin.body.errors?.[0] || "");
+
+  const officer = connect(base, { auth: { role: "officer", token: officerLogin.body.token }, transports: ["websocket"] });
   const ready = await waitFor(officer, "officer:ready");
-  check("Cán bộ vào phòng Socket", ready.user.username === "admin");
+  check("Cán bộ vào phòng Socket", ready.user?.username === "testcb");
 
   const deviceToken = "citizen-device-for-test";
   const citizen = connect(base, { auth: { role: "citizen", deviceToken }, transports: ["websocket"] });
@@ -116,7 +130,7 @@ try {
   const confirmedEvent = waitFor(citizen, "feedback-confirmed");
   const confirmed = await json(`/api/feedbacks/${encodeURIComponent(created.body.feedbackId)}/confirm`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${login.body.token}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${officerLogin.body.token}` },
     body: JSON.stringify({ note: "Đã cử tổ dân phố hỗ trợ chiều nay." }),
   });
   check("POST /api/feedbacks/:id/confirm", confirmed.status === 200 && confirmed.body.ok);
@@ -132,7 +146,7 @@ try {
   const mineItem = mine.body.feedbacks?.find((item) => item.id === created.body.feedbackId);
   check("Người dân tra lại thấy trạng thái approved", mineItem?.status === "approved");
 
-  const list = await json("/api/feedbacks?status=approved", { headers: { Authorization: `Bearer ${login.body.token}` } });
+  const list = await json("/api/feedbacks?status=approved", { headers: { Authorization: `Bearer ${officerLogin.body.token}` } });
   check("Danh sách cán bộ có phản hồi đã duyệt", list.body.feedbacks?.some((item) => item.id === created.body.feedbackId));
 
   const locations = await json("/api/public-locations");
@@ -140,13 +154,13 @@ try {
 
   const duplicate = await json(`/api/feedbacks/${encodeURIComponent(created.body.feedbackId)}/confirm`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${login.body.token}` },
+    headers: { Authorization: `Bearer ${officerLogin.body.token}` },
   });
   check("Xác nhận lặp lại -> 409", duplicate.status === 409);
 
   const rejected = await json(`/api/feedbacks/${encodeURIComponent(created.body.feedbackId)}/reject`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${login.body.token}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${officerLogin.body.token}` },
     body: JSON.stringify({ reason: "x" }),
   });
   check("Từ chối thiếu lý do -> 400", rejected.status === 400);

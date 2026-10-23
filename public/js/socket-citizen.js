@@ -41,6 +41,7 @@
     // payload: { feedbackId, status, statusLabel, reviewNote, reviewedAt, reviewedBy, wardName, feedback }
     console.log("[citizen] Cán bộ đã xác nhận:", payload);
     markConfirmed(payload.feedbackId, payload);
+    loadMyFeedbacks().catch(console.error);
     showToast(`✅ Phản hồi đã được xác nhận — Đã xác nhận / Online${payload.wardName ? ` (${payload.wardName})` : ""}`);
     if (payload.reviewNote) {
       setTimeout(() => showToast(`💬 Ghi chú từ cán bộ: ${payload.reviewNote}`), 1600);

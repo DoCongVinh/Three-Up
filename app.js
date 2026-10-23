@@ -301,6 +301,7 @@
   const isAdmin = () => state.user?.role === "admin";
   const isWard = () => state.user?.role === "ward";
   const isDesktop = () => Boolean(window.khanhHoa?.isDesktop);
+  const isWebServer = () => Boolean(window.khanhHoa?.isWebServer);
 
   /* ================================= Transport ============================= */
 
@@ -339,7 +340,7 @@
       $("loginPassword").value = "";
       return;
     }
-    state.sessionId = result.sessionId;
+    state.sessionId = result.sessionId || result.token;
     state.user = result.user;
     $("loginPassword").value = "";
     showAppView();
@@ -486,6 +487,19 @@
     // Thông báo: nạp ngay + đồng bộ định kỳ (bắt cảnh báo khẩn cấp mới).
     await loadNotifications();
     startNotificationPolling();
+    if (isWebServer() && typeof window.khanhHoa?.onRealtime === "function") {
+      window.khanhHoa.onRealtime("new-feedback", async (event) => {
+        toast(event.emergency ? "🚨 Có phản hồi khẩn cấp mới." : "📨 Có phản hồi mới.");
+        await Promise.all([loadNotifications(), loadQueueCounts()]);
+        if (state.view === "feedback") await loadQueue();
+      });
+      window.khanhHoa.onRealtime("feedback-reviewed", async () => {
+        await Promise.all([loadQueueCounts(), loadLocations()]);
+        if (state.view === "feedback") await loadQueue();
+      });
+      window.khanhHoa.onRealtime("notifications:changed", () => loadNotifications());
+      window.khanhHoa.onRealtime("map:changed", () => loadLocations());
+    }
     if (landing === "feedback") await openView("feedback");
   }
 
@@ -1442,14 +1456,30 @@
     const button = $("submitFeedback");
     button.disabled = true;
 
-    // 1) Lưu ảnh vào thư mục tạm (main chuẩn hoá tên file, chặn dung lượng).
+    // 1) Lưu ảnh vào thư mục tạm; web tải bytes lên API, desktop dùng picker native.
     const savedNames = [];
     let pendingImageDir = "";
     if (state.pendingImages.length) {
       for (const file of state.pendingImages) {
+        if (isWebServer()) {
+          if (!file.file || typeof window.khanhHoa.uploadImage !== "function") {
+            button.disabled = false;
+            showMessage(message, `Không đọc được ảnh ${file.name}.`);
+            return;
+          }
+          const saved = await window.khanhHoa.uploadImage(file.file, pendingImageDir);
+          if (!saved.ok) {
+            button.disabled = false;
+            showMessage(message, firstError(saved, `Không tải được ảnh ${file.name}.`));
+            return;
+          }
+          savedNames.push(saved.saved.name);
+          pendingImageDir = saved.pendingId;
+          continue;
+        }
         if (!file.path) {
           button.disabled = false;
-          showMessage(message, "Chỉ gửi được ảnh khi chạy ứng dụng desktop (npm start).");
+          showMessage(message, "Không có đường dẫn tệp ảnh.");
           return;
         }
         const saved = await api("image:save", { sourcePath: file.path });
@@ -1815,7 +1845,9 @@
     // Tên tệp đã chuẩn hoá (img-*.png) ở main process nên an toàn để ghép URL.
     img.src = isDesktop()
       ? `app-image://images/${encodeURIComponent(feedbackId)}/${encodeURIComponent(name)}`
-      : "";
+      : isWebServer()
+        ? `/images/${encodeURIComponent(feedbackId)}/${encodeURIComponent(name)}`
+        : "";
     img.addEventListener("error", () => {
       figure.classList.add("opacity-60");
       if (!figure.querySelector("[data-image-error]")) {
@@ -2878,20 +2910,23 @@
    * Không có đăng nhập/quản trị vì không có main process.
    */
   async function startWebMode() {
-    state.regions = FALLBACK_REGIONS;
-    state.user = { id: "web", username: "guest", displayName: "Khách (web)", role: "admin", scope: null, scopeName: null };
-    state.view = "map";
-    showView("map");
-    highlightTab("map");
-    $("currentUserName").textContent = "Chế độ trình duyệt";
-    $("currentUserRole").textContent = "Xem bản đồ công khai";
-    $("titleBarScope").textContent = "Chế độ web (không có quyền quản trị)";
-    // Tab quản trị không khả dụng ngoài Electron.
-    for (const node of document.querySelectorAll("[data-admin-only]")) setHidden(node, true);
+    // Bản web dùng cùng đăng nhập và phân quyền với Electron; chỉ native picker bị thay.
+    await loadRegions();
     buildRegionSelects();
-    state.locations = typeof khanhHoaWeb?.publicLocations === "function" ? await khanhHoaWeb.publicLocations() : [];
-    applyLocationFilters();
-    refreshMapSize();
+    updateAccountWardMeta();
+    const saved = await window.khanhHoa?.restoreSession?.();
+    if (saved?.sessionId && saved.user) {
+      state.sessionId = saved.sessionId;
+      state.user = saved.user;
+      await showAppView();
+      return;
+    }
+    state.sessionId = null;
+    state.user = null;
+    showView("login");
+    $("loginUsername").focus();
+    // Trang công khai vẫn cho xem bản đồ/điểm đã duyệt mà không đăng nhập.
+    loadLocations();
   }
 
   /* ================================ Events ================================= */
@@ -3056,7 +3091,7 @@
     $("imageFileInput")?.addEventListener("change", (event) => {
       const files = Array.from(event.target.files || []).slice(0, MAX_IMAGES);
       const room = MAX_IMAGES - state.pendingImages.length;
-      for (const file of files.slice(0, room)) state.pendingImages.push({ name: file.name, file, savedId: null });
+      for (const file of files.slice(0, room)) state.pendingImages.push({ name: file.name, file, path: null, savedId: null });
       renderPendingImages();
       event.target.value = "";
     });
@@ -3120,6 +3155,10 @@
     bindEvents();
     renderPendingImages();
 
+    if (isWebServer()) {
+      await startWebMode();
+      return;
+    }
     if (!isDesktop()) {
       await startWebMode();
       return;
