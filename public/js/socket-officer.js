@@ -54,10 +54,10 @@
 
   function connectSocket() {
     const token = session.get()?.token;
-    if (!token) return;
+    if (!token || typeof window.io !== "function") return;
 
     socket?.disconnect();
-    socket = io({ auth: { role: "officer", token } });
+    socket = window.io({ auth: { role: "officer", token } });
 
     socket.on("connect", () => {
       setSocketState(`Socket: đang hoạt động (${socket.id.slice(0, 6)})`, true);
@@ -69,7 +69,24 @@
       toast(payload?.error || "Phiên đăng nhập không hợp lệ.");
     });
     socket.on("officer:ready", (payload) => {
-      if (payload?.counts) setBadge(payload.counts.pending || 0);
+      const unread = payload?.counts?.unread || 0;
+      setBadge(unread);
+      if (Array.isArray(payload?.notifications)) {
+        payload.notifications.forEach(showNotification);
+        toast(unread ? `🔔 Đã tải ${unread} thông báo chưa đọc.` : "Đã tải thông báo mới nhất.");
+      }
+    });
+
+    socket.on("notification:new", (notification) => {
+      showNotification(notification);
+      toast(`🔔 ${notification.title || "Thông báo mới"}: ${notification.message || ""}`);
+      alertUser(false);
+    });
+
+    socket.on("notifications:changed", (payload) => {
+      if (Number.isFinite(payload?.unread)) setBadge(payload.unread);
+      // Refresh full list and counts after every notification change.
+      loadNotifications();
     });
 
     /* ------------------ ★ 3. Nhận "new-feedback" ------------------------ */
@@ -77,7 +94,8 @@
       // payload: { feedback, submittedAt, wardName, emergency, submissionsFromDevice, unreadPending }
       console.log("[officer] Phản hồi mới:", payload);
       addFeedback(payload.feedback);
-      setBadge(payload.unreadPending ?? countPending());
+      if (Number.isFinite(payload.unread)) setBadge(payload.unread);
+      else setBadge(payload.unreadPending ?? countPending());
       toast(
         payload.emergency
           ? `🚨 KHẨN CẤP từ ${payload.feedback.wardName || payload.wardName}: ${payload.feedback.reason}`
@@ -92,7 +110,11 @@
       updateItemStatus(payload.feedbackId, payload.status);
     });
 
-    socket.on("dashboard:counts", (counts) => setBadge(counts?.pending || 0));
+    socket.on("dashboard:counts", (counts) => {
+      if (Number.isFinite(counts?.unread)) setBadge(counts.unread);
+      else if (Number.isFinite(counts?.pending)) setBadge(counts.pending);
+      loadNotifications();
+    });
   }
 
   $("loginBtn").addEventListener("click", async () => {
@@ -101,10 +123,15 @@
     errorBox.hidden = true;
     button.disabled = true;
 
-    const result = await api("/auth/login", {
-      method: "POST",
-      body: { username: $("username").value.trim(), password: $("password").value },
-    });
+    let result;
+    try {
+      result = await api("/auth/login", {
+        method: "POST",
+        body: { username: $("username").value.trim(), password: $("password").value },
+      });
+    } catch (error) {
+      result = { ok: false, error: error.message || "Không kết nối được máy chủ." };
+    }
 
     button.disabled = false;
     if (!result.ok) {
@@ -134,7 +161,7 @@
     $("loginBtn").hidden = true;
     $("logoutBtn").hidden = false;
     $("password").value = "";
-    await loadFeedbacks();
+    await Promise.all([loadFeedbacks(), loadNotifications()]);
     connectSocket();
   }
 
@@ -149,6 +176,26 @@
 
   /* ------------------------------ Danh sách ------------------------------- */
 
+  async function loadNotifications() {
+    const result = await api("/notifications");
+    if (!result.ok) return;
+    setBadge(result.unread || 0);
+    (result.notifications || []).forEach(showNotification);
+  }
+
+  function showNotification(notification) {
+    if (!notification) return;
+    const list = $("list");
+    const id = notification.id || `${notification.type}-${notification.createdAt}`;
+    if (list.querySelector(`[data-notification-id="${CSS.escape(String(id))}"]`)) return;
+    list.querySelector("li[data-empty]")?.remove();
+    const item = document.createElement("li");
+    item.dataset.notificationId = id;
+    item.className = "fresh";
+    item.innerHTML = `<div class="head"><span class="who-name">🔔 ${escapeHtml(notification.title || "Thông báo mới")}</span><span class="pill">${escapeHtml(notification.type || "Thông báo")}</span></div><div class="content">${escapeHtml(notification.message || "Yêu cầu cập nhật thông tin.")}</div><div class="meta">${escapeHtml(notification.wardName || "")} · ${escapeHtml(new Date(notification.createdAt || Date.now()).toLocaleString("vi-VN"))}</div>`;
+    list.prepend(item);
+  }
+
   async function loadFeedbacks() {
     const result = await api("/feedbacks?status=pending");
     if (!result.ok) {
@@ -160,7 +207,7 @@
     if (!result.feedbacks.length) {
       $("list").innerHTML = '<li data-empty style="color:#64748b;font-size:13px">Chưa có phản hồi nào cần xử lý.</li>';
     }
-    setBadge(result.counts?.pending || 0);
+    // Notifications and pending feedback have separate counts; the bell is unread notifications.
   }
 
   function addFeedback(feedback, { prepend = true } = {}) {

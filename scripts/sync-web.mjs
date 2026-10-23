@@ -15,20 +15,17 @@ import { fileURLToPath } from "node:url";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PUBLIC_DIR = join(ROOT, "public");
 
-const HEAD_TAG = '<script src="/socket.io/socket.io.js"></script>';
-const BODY_TAGS = [
-  '<script src="/js/khanhHoa-web.js"></script>',
-  '<script src="app.js"></script>',
-].join("\n  ");
+const SOCKET_TAG = '<script src="/socket.io/socket.io.js"></script>';
+const BRIDGE_TAG = '<script src="/js/khanhHoa-web.js"></script>';
 
 function buildIndexHtml() {
-  const html = readFileSync(join(ROOT, "index.html"), "utf8");
+  let html = readFileSync(join(ROOT, "index.html"), "utf8");
   if (!html.includes('<script src="app.js"></script>')) {
     throw new Error("index.html: không tìm thấy <script src=\"app.js\">");
   }
-  return html
-    .replace('<script src="app.js"></script>', BODY_TAGS)
-    .replace("</head>", `  ${HEAD_TAG}\n</head>`);
+  if (!html.includes(SOCKET_TAG)) html = html.replace("</head>", `  ${SOCKET_TAG}\n</head>`);
+  if (!html.includes(BRIDGE_TAG)) html = html.replace('<script src="app.js"></script>', `  ${BRIDGE_TAG}\n  <script src="app.js"></script>`);
+  return html;
 }
 
 mkdirSync(PUBLIC_DIR, { recursive: true });

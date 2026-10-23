@@ -188,10 +188,8 @@ export function notificationsForUser(notifications, user) {
   return notifications
     .filter((item) => {
       if (item.type === NOTIFICATION_TYPES.REVIEW_REMINDER) return item.scope === user.username;
-      // Yêu cầu cập nhật: gửi đúng cán bộ (scope) hoặc mọi cán bộ của phường/xã đó.
-      if (item.type === NOTIFICATION_TYPES.UPDATE_REQUEST) {
-        return item.scope ? item.scope === user.username : item.wardId === user.scope;
-      }
+      // Thông báo phải tới cán bộ đang phụ trách đúng phường/xã, kể cả yêu cầu
+      // cập nhật ban đầu được gán cho username cụ thể.
       return item.wardId === user.scope;
     })
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));

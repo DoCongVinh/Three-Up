@@ -345,6 +345,7 @@ export class AppService {
     return {
       ok: true,
       feedbackId: created.feedback.id,
+      feedback: { ...created.feedback, images },
       routedTo: ward ? { wardId: ward.id, wardName: ward.name, regionName: ward.regionName } : null,
       images,
       emergency: created.feedback.category === "khan_cap",
@@ -425,7 +426,7 @@ export class AppService {
     const categories = this.store.categories();
     const approved = this.store
       .feedbacks()
-      .filter((item) => item.status === FEEDBACK_STATUS.APPROVED)
+      .filter((item) => isDisplayActive(item, this.store.now()))
       .map((item) => {
         const location = approvedFeedbackToLocation(item, categories);
         // Kèm nhãn/màu nhóm để UI hiển thị đúng cả nhóm do admin tự thêm.
@@ -640,6 +641,11 @@ export class AppService {
         ip: feedback.ip || "",
         ipMasked: feedback.ipMasked || maskIp(feedback.ip),
         ipLocation: feedback.ipLocation || null,
+        // Địa chỉ và GPS là vị trí phản hồi thực tế; không nhầm với ước lượng theo IP.
+        address: feedback.address || "",
+        lat: Number.isFinite(Number(feedback.lat)) ? Number(feedback.lat) : null,
+        lng: Number.isFinite(Number(feedback.lng)) ? Number(feedback.lng) : null,
+        wardId: feedback.wardId || null,
         deviceId: feedback.deviceId || null,
         deviceLabel: device ? device.label : null,
         deviceFirstSeen: device ? device.createdAt : null,

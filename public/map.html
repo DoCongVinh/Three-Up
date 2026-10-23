@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0f766e">
   <title>Bản đồ công khai — Bản đồ Yêu thương Khánh Hòa</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -13,8 +13,18 @@
     h1 { margin: 0; font-size: 16px; }
     a { color: #ccfbf1; }
     #map { width: 100%; height: calc(100dvh - 55px); }
-    #state { font-size: 12px; }
-  </style>
+      #state {
+        font-size: 12px;
+      }
+
+      @media (max-width: 768px) {
+        header { min-height: 56px; padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
+        h1 { flex: 1 1 100%; font-size: 14px; }
+        #state, header a { font-size: 11px; }
+        #map { height: calc(100dvh - 82px); min-height: 300px; }
+        .leaflet-popup-content { max-width: min(70vw, 260px); overflow-wrap: anywhere; }
+      }
+    </style>
 </head>
 <body>
   <header><h1>📍 Các điểm hỗ trợ đã được xác nhận</h1><span id="state">Đang tải…</span><a href="/">Về trang chính</a></header>

@@ -284,6 +284,8 @@
     feedback: { list: [], selected: null, status: "pending", counts: {} },
     accounts: [],
     directory: [],
+    directoryAll: [],
+    directoryFilter: "all",
     directory_selected: null,
     categories: [],
     editingCategory: null,
@@ -300,7 +302,9 @@
 
   const isAdmin = () => state.user?.role === "admin";
   const isWard = () => state.user?.role === "ward";
+  const isGuest = () => !state.sessionId || Boolean(state.user?.guest || state.user?.role === "citizen");
   const isDesktop = () => Boolean(window.khanhHoa?.isDesktop);
+  const isWebServer = () => Boolean(window.khanhHoa?.isWebServer);
 
   /* ================================= Transport ============================= */
 
@@ -405,6 +409,7 @@
   async function openView(view) {
     const config = VIEWS[view];
     if (!config) return;
+    if (isGuest() && view !== "map") return;
     if (config.adminOnly && !isAdmin()) return;
 
     // Mọi tab cần danh mục phường/xã (form, bộ lọc) -> bảo đảm đã nạp.
@@ -414,6 +419,9 @@
     showView(view);
     highlightTab(view);
     if (view === "map") {
+      refreshMapSize();
+      // Khách chưa đăng nhập không gọi IPC/database desktop.
+      if (isGuest() && !isWebServer()) return;
       // Phản hồi có thể vừa được duyệt ở tab khác -> nạp lại ghim.
       await loadLocations();
       // Container vừa từ hidden -> hiển thị: Leaflet phải đo lại kích thước,
@@ -475,12 +483,31 @@
       : state.user?.role === "admin" ? "Cấp Tỉnh · Quản trị tổng" : "Địa bàn: " + scope;
     // Admin-only tab + đăng xuất chỉ có ý nghĩa khi đã đăng nhập thật.
     for (const node of document.querySelectorAll("[data-admin-only]")) setHidden(node, !isAdmin());
+    for (const id of ["tab-feedback", "tab-directory", "tab-accounts"]) {
+      const tab = $(id);
+      if (tab) setHidden(tab, isGuest() || (id === "tab-accounts" && !isAdmin()));
+    }
     setHidden($("logoutButton"), isGuest());
 
     await loadRegions();
     buildRegionSelects();
-    // Cán bộ vào thẳng hàng đợi phản hồi của mình (quyết định trước khi nạp dữ liệu).
-    const landing = isWard() ? "feedback" : "map";
+    const landing = isGuest() ? "map" : isWard() ? "feedback" : "map";
+    if (isGuest()) {
+      if (isWebServer()) {
+        await loadLocations();
+        if (!state.publicMapRealtimeBound && typeof window.khanhHoa?.onRealtime === "function") {
+          state.publicMapRealtimeBound = true;
+          window.khanhHoa.onRealtime("map:changed", async (event) => {
+            if (event?.location) {
+              state.locations = [event.location, ...state.locations.filter((item) => item.id !== event.location.id)];
+              applyLocationFilters();
+            } else await loadLocations();
+          });
+        }
+      }
+      refreshMapSize();
+      return;
+    }
     await Promise.all([loadLocations(), loadQueueCounts()]);
     refreshMapSize();
     // Thông báo: nạp ngay + đồng bộ định kỳ (bắt cảnh báo khẩn cấp mới).
@@ -1190,7 +1217,8 @@
   }
 
   function focusLocation(location) {
-    map.flyTo([location.lat, location.lng], Math.max(map.getZoom(), 13), { duration: 0.6 });
+    if (!map || !Number.isFinite(Number(location.lat)) || !Number.isFinite(Number(location.lng))) return;
+    map.flyTo([Number(location.lat), Number(location.lng)], Math.max(map.getZoom(), 13), { duration: 0.6 });
     state.markers.get(location.id)?.openPopup();
   }
 
@@ -1242,7 +1270,7 @@
     const { regionId, wardId } = state.filters;
     const regionOk = regionId === "all" || (state.regions.find((region) => region.id === regionId)?.wards || [])
       .some((ward) => ward.id === location.ward);
-    const wardOk = wardId === "all" || location.ward === wardId;
+    const wardOk = wardId !== "all" && location.ward === wardId;
     const categoryOk = state.activeCategory === "all" || location.category === state.activeCategory;
     return regionOk && wardOk && categoryOk;
   }
@@ -1269,7 +1297,7 @@
    * Mở tab bản đồ, lọc đúng phường/xã và bay tới vị trí điểm đầu tiên.
    * Dùng cho shortcut "Xem điểm trên bản đồ" ở các tab khác.
    */
-  async function showWardOnMap(wardId, locationId = null) {
+  async function showWardOnMap(wardId, locationId = null, coordinates = null) {
     state.filters.wardId = wardId;
     await openView("map");
     rebuildWardFilter();
@@ -1278,7 +1306,11 @@
     const target = locationId
       ? state.locations.find((location) => location.id === locationId)
       : locationsOfWard(wardId)[0];
-    if (target) {
+    if (coordinates && Number.isFinite(coordinates.lat) && Number.isFinite(coordinates.lng)) {
+      refreshMapSize();
+      map.flyTo([coordinates.lat, coordinates.lng], Math.max(map.getZoom(), 15), { duration: 0.6 });
+      if (target) state.markers.get(target.id)?.openPopup();
+    } else if (target) {
       refreshMapSize();
       focusLocation(target);
     } else {
@@ -1472,6 +1504,7 @@
       showMessage(message, firstError(result, "Không gửi được phản hồi."));
       return;
     }
+    window.khanhHoa?.rememberFeedbackId?.(result.feedback?.id || result.feedbackId);
 
     showMessage(message, result.message || "Đã gửi phản hồi.", "success");
     toast("Đã gửi tới cán bộ phường/xã để xác minh.");
@@ -1715,9 +1748,9 @@
     const zoom = el("button", "rounded-xl bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-100", "🗺️ Xem vị trí trên bản đồ");
     zoom.type = "button";
     zoom.addEventListener("click", async () => {
-      // Giữ lại phản hồi đang xem để quay lại tab Phản hồi vẫn còn chi tiết.
+      // Chuyển tab và điều hướng tới đúng toạ độ GPS của phản hồi.
       state.feedback.selected = item.id;
-      await showWardOnMap(item.wardId, item.id);
+      await showWardOnMap(item.wardId, item.id, { lat: Number(item.lat), lng: Number(item.lng) });
     });
     gpsActions.append(dir, zoom);
     gpsBox.appendChild(gpsActions);
@@ -1950,6 +1983,19 @@
 
   async function loadDirectory() {
     const result = await api("directory:statistics", { sessionId: state.sessionId });
+    const filterBar = $("directoryFilterBar");
+    if (filterBar) {
+      filterBar.classList.toggle("hidden", !isAdmin());
+      filterBar.classList.toggle("flex", isAdmin());
+      for (const button of filterBar.querySelectorAll("[data-directory-filter]")) {
+        const active = button.dataset.directoryFilter === state.directoryFilter;
+        button.classList.toggle("bg-teal-700", active);
+        button.classList.toggle("text-white", active);
+        button.classList.toggle("bg-white", !active);
+        button.classList.toggle("text-slate-700", !active);
+        button.setAttribute("aria-pressed", String(active));
+      }
+    }
     const grid = $("directoryGrid");
     clear(grid);
     if (!result.ok) {
@@ -1957,6 +2003,7 @@
       return;
     }
     state.directory = result.statistics;
+    state.directoryAll = [];
 
     if (result.scope) {
       $("directorySubtitle").textContent = "Số liệu địa bàn " + (result.scopeName || "") + " mà bạn phụ trách.";
@@ -1974,21 +2021,36 @@
       }),
       { wards: 0, accounts: 0, pending: 0, approved: 0 },
     );
+    const allWardRows = result.statistics.flatMap((region) => region.wards);
+    const displayTotals = isAdmin() && state.directoryFilter === "pending"
+      ? allWardRows.filter((ward) => Number(ward.pendingCount) > 0).reduce((acc, ward) => ({
+          wards: acc.wards + 1,
+          accounts: acc.accounts + (ward.accountCount || 0),
+          pending: acc.pending + (ward.pendingCount || 0),
+          approved: acc.approved + (ward.approvedCount || 0),
+        }), { wards: 0, accounts: 0, pending: 0, approved: 0 })
+      : totals;
     const totalsBox = $("directoryTotals");
     clear(totalsBox);
     totalsBox.append(
-      statChip(totals.wards + " phường/xã", "bg-white text-slate-700 border border-slate-200"),
-      statChip(totals.accounts + " tài khoản cán bộ", "bg-teal-700 text-white"),
-      statChip(totals.approved + " điểm đã công bố", "bg-emerald-100 text-emerald-900"),
-      statChip(totals.pending + " chờ duyệt", "bg-amber-100 text-amber-900"),
+      statChip(displayTotals.wards + " phường/xã", "bg-white text-slate-700 border border-slate-200"),
+      statChip(displayTotals.accounts + " tài khoản cán bộ", "bg-teal-700 text-white"),
+      statChip(displayTotals.approved + " điểm đã công bố", "bg-emerald-100 text-emerald-900"),
+      statChip(displayTotals.pending + " chờ duyệt", "bg-amber-100 text-amber-900"),
     );
 
     // Mỗi phường/xã là một thẻ (2 cấp: không còn nhóm theo huyện).
     const wards = result.statistics.flatMap((region) =>
       region.wards.map((ward) => ({ ...ward, regionId: region.id, regionName: region.name })),
     );
-    state.directory = wards;
-    for (const ward of wards) grid.appendChild(buildWardCard(ward));
+    state.directoryAll = wards;
+    state.directory = isAdmin() && state.directoryFilter === "pending"
+      ? wards.filter((ward) => Number(ward.pendingCount) > 0)
+      : wards;
+    for (const ward of state.directory) grid.appendChild(buildWardCard(ward));
+    if (!state.directory.length) {
+      grid.appendChild(el("p", "col-span-full rounded-xl border-dashed border-slate-300 p-6 text-center text-sm text-slate-500", "Không có phường/xã nào đang có phản hồi chờ duyệt."));
+    }
     const selected = state.directory.find((ward) => ward.id === state.directory_selected);
     renderDirectoryDetail(selected || null);
   }
@@ -2519,8 +2581,7 @@
 
   /* ================================ Profile ================================ */
 
-  /** Khách xem bản đồ công khai: có "user" hiển thị nhưng KHÔNG có phiên đăng nhập thật. */
-  const isGuest = () => !state.sessionId;
+  /** Khách xem bản đồ công khai không có session đăng nhập. */
 
   function openProfile() {
     const user = state.user;
@@ -2744,6 +2805,8 @@
 
   /** Mở danh sách phản hồi do CHÍNH thiết bị này đã gửi. */
   async function openMyFeedback() {
+    // Merge server-side device history and the local list of feedback IDs.
+    const savedIds = await (window.khanhHoa?.syncFeedbackIds?.() || Promise.resolve(window.khanhHoa?.feedbackIds?.() || []));
     const modal = $("myFeedbackModal");
     show(modal);
     modal.classList.add("flex");
@@ -2752,13 +2815,15 @@
     clear(list);
     summary.textContent = "Đang tải…";
 
-    const result = await api("device:myFeedbacks", {});
+    const result = await api("device:myFeedbacks", { feedbackIds: savedIds });
     if (!result.ok) {
       summary.textContent = firstError(result, "Không tải được dữ liệu thiết bị.");
       return;
     }
     if (!result.count) {
-      summary.textContent = "Thiết bị này chưa gửi phản hồi nào.";
+      summary.textContent = savedIds.length
+        ? "Đã lưu " + savedIds.length + " mã phản hồi trên thiết bị; kết nối máy chủ để lấy trạng thái mới nhất."
+        : "Thiết bị này chưa gửi phản hồi nào.";
       return;
     }
     summary.textContent = `Thiết bị này đã gửi ${result.count} phản hồi` +
@@ -2772,6 +2837,7 @@
       card.appendChild(head);
       card.appendChild(el("p", "mt-1 text-[11px] text-slate-500",
         `${item.wardName}${item.hamlet ? " · " + item.hamlet : ""} · ${formatTime(item.createdAt)}`));
+      card.dataset.feedbackId = item.id;
       card.appendChild(el("p", "mt-1 text-xs leading-relaxed text-slate-600", item.address));
       if (item.reviewNote) {
         card.appendChild(el("p", "mt-1 text-[11px] text-amber-800", "Ghi chú cán bộ: " + item.reviewNote));
@@ -2814,7 +2880,11 @@
         rows.appendChild(line);
       };
       row("IP", o.ip || "không rõ");
-      row("Vị trí (ước lượng)", o.ipLocation ? o.ipLocation.area : "—");
+      row("Vị trí (ước lượng theo IP)", o.ipLocation ? o.ipLocation.area : "—");
+      row("Địa chỉ người gửi", o.address || "—");
+      if (Number.isFinite(Number(o.lat)) && Number.isFinite(Number(o.lng))) {
+        row("GPS phản hồi", `${Number(o.lat).toFixed(6)}, ${Number(o.lng).toFixed(6)}`);
+      }
       row("Thiết bị", o.deviceLabel || o.deviceId || "không rõ");
       row("Số lần gửi từ thiết bị", String(o.submissionsFromDevice || 0));
       row("Nguồn", o.submittedFrom === "desktop" ? "Ứng dụng desktop" : "Trình duyệt");
@@ -2834,6 +2904,8 @@
 
     if (isAdmin()) {
       box.appendChild(el("h4", "text-xs font-bold uppercase tracking-wide text-slate-500", "Nguồn gửi (IP & thiết bị)"));
+      const address = el("p", "mt-2 text-xs text-slate-700", `Địa chỉ phản hồi: ${item.address || "chưa có"}`);
+      box.appendChild(address);
       const view = el("button", "mt-2 rounded-lg bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 hover:bg-amber-100",
         "🔎 Xem IP & thiết bị người gửi");
       view.type = "button";
@@ -2865,7 +2937,8 @@
       }
       const o = result.origin || {};
       hint.textContent =
-        "Gửi từ: " + (o.ipLocation ? o.ipLocation.area : "không xác định") +
+        "Địa chỉ: " + (o.address || "không rõ") +
+        (o.ipLocation ? " · vị trí IP ước lượng: " + o.ipLocation.area : "") +
         (o.submissionsFromDevice ? " · thiết bị đã gửi " + o.submissionsFromDevice + " lần" : "");
     });
     return box;
@@ -2879,7 +2952,7 @@
    */
   async function startWebMode() {
     state.regions = FALLBACK_REGIONS;
-    state.user = { id: "web", username: "guest", displayName: "Khách (web)", role: "admin", scope: null, scopeName: null };
+    state.user = { id: "guest", username: "guest", displayName: "Khách (web)", role: "citizen", scope: null, scopeName: null, guest: true };
     state.view = "map";
     showView("map");
     highlightTab("map");
@@ -2888,6 +2961,16 @@
     $("titleBarScope").textContent = "Chế độ web (không có quyền quản trị)";
     // Tab quản trị không khả dụng ngoài Electron.
     for (const node of document.querySelectorAll("[data-admin-only]")) setHidden(node, true);
+    for (const id of ["tab-feedback", "tab-directory", "tab-accounts"]) if ($(id)) setHidden($(id), true);
+    if (!state.publicMapRealtimeBound && typeof window.khanhHoa?.onRealtime === "function") {
+      state.publicMapRealtimeBound = true;
+      window.khanhHoa.onRealtime("map:changed", async (event) => {
+        if (event?.location && event.location.ward) {
+          state.locations = [event.location, ...state.locations.filter((item) => item.id !== event.location.id)];
+          applyLocationFilters();
+        } else await loadLocations();
+      });
+    }
     buildRegionSelects();
     state.locations = typeof khanhHoaWeb?.publicLocations === "function" ? await khanhHoaWeb.publicLocations() : [];
     applyLocationFilters();
@@ -3066,6 +3149,15 @@
       button.addEventListener("click", async () => {
         state.feedback.status = button.dataset.status;
         await loadQueue();
+      });
+    }
+    const directoryFilters = $("directoryFilterBar");
+    if (directoryFilters) {
+      directoryFilters.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-directory-filter]");
+        if (!button || !isAdmin()) return;
+        state.directoryFilter = button.dataset.directoryFilter === "pending" ? "pending" : "all";
+        await loadDirectory();
       });
     }
 

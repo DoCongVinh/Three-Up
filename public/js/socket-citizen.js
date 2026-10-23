@@ -92,6 +92,15 @@
         window.khanhHoa?.device?.set?.(result.deviceToken);
         socket.emit("citizen:subscribe", { deviceToken: result.deviceToken });
       }
+      const feedbackId = result.feedbackId || result.feedback?.id;
+      if (feedbackId) {
+        const key = "khanhhoa.web.myFeedbackIds";
+        try {
+          const saved = JSON.parse(localStorage.getItem(key) || "[]");
+          localStorage.setItem(key, JSON.stringify([feedbackId, ...(Array.isArray(saved) ? saved : []).filter((id) => id !== feedbackId)].slice(0, 200)));
+        } catch { /* localStorage unavailable */ }
+        window.khanhHoa?.rememberFeedbackId?.(feedbackId);
+      }
 
       prependFeedback(result.feedback);
       showToast(result.message || "Đã gửi phản hồi tới cán bộ.");

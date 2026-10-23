@@ -19,6 +19,23 @@
   const API_BASE = window.KHANHHOA_API_BASE || "/api";
   const STORAGE_KEY = "khanhhoa.web.session";
   const DEVICE_KEY = "khanhhoa.web.deviceToken";
+  const FEEDBACK_IDS_KEY = "khanhhoa.web.myFeedbackIds";
+  const FEEDBACK_IDS_SYNCED_KEY = "khanhhoa.web.myFeedbackIdsSynced";
+
+  function savedFeedbackIds() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(FEEDBACK_IDS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : [];
+    } catch { return []; }
+  }
+  function rememberFeedbackId(id) {
+    if (!id) return;
+    try {
+      const ids = [id, ...savedFeedbackIds().filter((value) => value !== id)].slice(0, 200);
+      localStorage.setItem(FEEDBACK_IDS_KEY, JSON.stringify(ids));
+      localStorage.setItem(FEEDBACK_IDS_SYNCED_KEY, "true");
+    } catch { /* storage có thể bị tắt/quá dung lượng */ }
+  }
 
   /** Chỉ kênh native picker bị cấm; các kênh còn lại chạy qua /api/rpc. */
   const UNSUPPORTED = {
@@ -82,7 +99,12 @@
     const headers = { Accept: "application/json", ...extraHeaders };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (auth && session.token()) headers.Authorization = `Bearer ${session.token()}`;
-    if (getSessionDeviceToken()) headers["X-Device-Token"] = getSessionDeviceToken();
+    const deviceToken = getSessionDeviceToken();
+    if (deviceToken) headers["X-Device-Token"] = deviceToken;
+    // RPC history endpoints also inspect a body token because they may run without cookies.
+    if (body && typeof body === "object" && !Array.isArray(body) && deviceToken && !body.deviceToken) {
+      body = { ...body, deviceToken };
+    }
 
     try {
       const response = await fetch(`${API_BASE}${path}`, {
@@ -134,6 +156,12 @@
       this.socket.on("disconnect", () => {
         this.ready = false;
       });
+      this.socket.on("officer:ready", (payload) => {
+        if (payload?.notifications) window.dispatchEvent(new CustomEvent("khanhhoa:notifications", { detail: payload }));
+      });
+      this.socket.on("notification:new", (notification) => window.dispatchEvent(new CustomEvent("khanhhoa:notification", { detail: notification })));
+      this.socket.on("notifications:changed", (payload) => window.dispatchEvent(new CustomEvent("khanhhoa:notifications-changed", { detail: payload })));
+      this.socket.on("dashboard:counts", (payload) => window.dispatchEvent(new CustomEvent("khanhhoa:dashboard-counts", { detail: payload })));
       return this.socket;
     },
 
@@ -174,10 +202,12 @@
       if (!session.token()) return Promise.resolve({ ok: false, code: "UNAUTHENTICATED", errors: ["Chưa đăng nhập."] });
       return request("/auth/me", { auth: true });
     },
+    "notifications:list": (payload) => request("/notifications", { auth: true }),
     "auth:changePassword": (payload) => request("/auth/change-password", { method: "POST", body: payload, auth: true }),
 
     "feedback:submit": (payload) => request("/rpc/feedback:submit", { method: "POST", body: payload }).then((result) => {
       if (result.ok && result.deviceToken) device.set(result.deviceToken);
+      if (result.ok) rememberFeedbackId(result.feedback?.id || result.feedbackId);
       realtime.subscribe();
       return result;
     }),
@@ -202,8 +232,23 @@
     "regions:update": (payload) => request("/rpc/regions:update", { method: "POST", body: payload, auth: true }),
     "regions:delete": (payload) => request("/rpc/regions:delete", { method: "POST", body: payload, auth: true }),
     "device:register": (payload) => request("/rpc/device:register", { method: "POST", body: payload }),
-    "device:myFeedbackIds": (payload) => request("/rpc/device:myFeedbacks", { method: "POST", body: payload }),
-    "device:myFeedbacks": (payload) => request("/rpc/device:myFeedbacks", { method: "POST", body: payload }),
+    "device:myFeedbackIds": (payload = {}) => request("/rpc/device:myFeedbackIds", { method: "POST", body: { ...payload, deviceToken: payload.deviceToken || getSessionDeviceToken() } }).then((result) => {
+      if (!result.ok) return result;
+      const serverIds = result.feedbackIds || (result.feedbacks || []).map((item) => item.id).filter(Boolean);
+      const ids = [...new Set([...savedFeedbackIds(), ...serverIds])].slice(0, 200);
+      try { localStorage.setItem(FEEDBACK_IDS_KEY, JSON.stringify(ids)); } catch { /* no-op */ }
+      return { ...result, feedbackIds: ids };
+    }),
+    "device:myFeedbacks": (payload = {}) => request("/rpc/device:myFeedbacks", { method: "POST", body: { ...payload, deviceToken: payload.deviceToken || getSessionDeviceToken(), feedbackIds: [...new Set([...savedFeedbackIds(), ...(payload.feedbackIds || [])])] } }).then((result) => {
+      if (!result.ok) return result;
+      const serverIds = result.feedbackIds || (result.feedbacks || []).map((item) => item.id).filter(Boolean);
+      const requestedIds = Array.isArray(payload.feedbackIds) ? payload.feedbackIds : [];
+      const ids = [...new Set([...savedFeedbackIds(), ...requestedIds, ...serverIds])].slice(0, 200);
+      try { localStorage.setItem(FEEDBACK_IDS_KEY, JSON.stringify(ids)); } catch { /* no-op */ }
+      const feedbacks = (result.feedbacks || []).filter((item) => ids.includes(item.id)).map(toClientFeedback);
+      const byId = new Map(feedbacks.map((item) => [item.id, item]));
+      return { ...result, count: feedbacks.length, feedbacks: ids.map((id) => byId.get(id)).filter(Boolean) };
+    }),
     "image:url": (payload) => request("/rpc/image:url", { method: "POST", body: payload }),
     "app:info": () => request("/health"),
     "dashboard:summary": (payload) => request("/rpc/dashboard:summary", { method: "POST", body: payload, auth: true }),
@@ -212,7 +257,6 @@
     "accounts:setActive": (payload) => request("/rpc/accounts:setActive", { method: "POST", body: payload, auth: true }),
     "accounts:update": (payload) => request("/rpc/accounts:update", { method: "POST", body: payload, auth: true }),
     "accounts:resetPassword": (payload) => request("/rpc/accounts:resetPassword", { method: "POST", body: payload, auth: true }),
-    "notifications:list": (payload) => request("/rpc/notifications:list", { method: "POST", body: payload, auth: true }),
     "notifications:read": (payload) => request("/rpc/notifications:read", { method: "POST", body: payload, auth: true }),
     "notifications:readAll": (payload) => request("/rpc/notifications:readAll", { method: "POST", body: payload, auth: true }),
     "notifications:remindReviewers": (payload) => request("/rpc/notifications:remindReviewers", { method: "POST", body: payload, auth: true }),
@@ -244,8 +288,16 @@
   const compatRoutes = {
     "feedback:list": (payload = {}) => request("/rpc/feedback:list", { method: "POST", body: payload, auth: true }).then((result) =>
       result.ok ? { ...result, feedbacks: (result.feedbacks || []).map(toClientFeedback) } : result),
-    "device:myFeedbacks": (payload = {}) => request("/rpc/device:myFeedbacks", { method: "POST", body: payload }).then((result) =>
-      result.ok ? { ...result, feedbacks: (result.feedbacks || []).map(toClientFeedback) } : result),
+    "device:myFeedbacks": (payload = {}) => request("/rpc/device:myFeedbacks", { method: "POST", body: { ...payload, deviceToken: payload.deviceToken || getSessionDeviceToken(), feedbackIds: [...new Set([...savedFeedbackIds(), ...(payload.feedbackIds || [])])] } }).then((result) => {
+      if (!result.ok) return result;
+      const serverIds = result.feedbackIds || (result.feedbacks || []).map((item) => item.id).filter(Boolean);
+      const requestedIds = Array.isArray(payload.feedbackIds) ? payload.feedbackIds : [];
+      const ids = [...new Set([...savedFeedbackIds(), ...requestedIds, ...serverIds])].slice(0, 200);
+      try { localStorage.setItem(FEEDBACK_IDS_KEY, JSON.stringify(ids)); } catch { /* no-op */ }
+      const feedbacks = (result.feedbacks || []).filter((item) => ids.includes(item.id)).map(toClientFeedback);
+      const byId = new Map(feedbacks.map((item) => [item.id, item]));
+      return { ...result, count: feedbacks.length, feedbacks: ids.map((id) => byId.get(id)).filter(Boolean) };
+    }),
   };
 
   async function uploadImage(file, pendingId = "") {
@@ -270,6 +322,23 @@
     onRealtime: (event, handler) => realtime.on(event, handler),
     uploadImage,
     publicLocations: async () => { const result = await request("/public-locations"); return result.ok ? result.locations : []; },
+    feedbackIds: () => savedFeedbackIds(),
+    rememberFeedbackId,
+    syncFeedbackIds: async () => {
+      if (!getSessionDeviceToken()) return savedFeedbackIds();
+      try {
+        const known = JSON.parse(localStorage.getItem(FEEDBACK_IDS_SYNCED_KEY) || "false");
+        if (known) return savedFeedbackIds();
+      } catch { /* older/unavailable storage */ }
+      const response = await request("/rpc/device:myFeedbackIds", { method: "POST", body: { deviceToken: getSessionDeviceToken() } });
+      if (!response.ok) return savedFeedbackIds();
+      const ids = [...new Set([...savedFeedbackIds(), ...(response.feedbackIds || [])])].slice(0, 200);
+      try {
+        localStorage.setItem(FEEDBACK_IDS_KEY, JSON.stringify(ids));
+        localStorage.setItem(FEEDBACK_IDS_SYNCED_KEY, "true");
+      } catch { /* no-op */ }
+      return ids;
+    },
     restoreSession: async () => {
       const saved = session.get();
       if (!saved?.sessionId && !saved?.token) return null;

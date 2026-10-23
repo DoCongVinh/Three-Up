@@ -158,16 +158,39 @@ export function createWebApp(options = {}) {
       if (!feedback) return;
       const eventData = { feedback: officerFeedbackView(feedback), wardName: findWardInUnits(store.regions(), feedback.wardId)?.name || "", emergency: feedback.category === "khan_cap", unreadPending: store.feedbacks().filter((x) => x.status === "pending" && x.wardId === feedback.wardId).length };
       io.to(`ward:${feedback.wardId}`).to("role:admin").emit("new-feedback", eventData);
+      const pendingCount = store.feedbacks().filter((x) => x.status === "pending" && x.wardId === feedback.wardId).length;
+      io.to(`ward:${feedback.wardId}`).to("role:admin").emit("dashboard:counts", { pending: pendingCount });
       io.to(`ward:${feedback.wardId}`).to("role:admin").emit("notifications:changed", { wardId: feedback.wardId });
     }
     if (channel === "feedback:review") {
       const feedback = store.feedbacks().find((item) => item.id === payload.feedbackId);
       if (!feedback) return;
-      const data = { feedbackId: feedback.id, status: feedback.status, statusLabel: STATUS_LABELS[feedback.status], reviewNote: feedback.reviewNote || "", reviewedAt: feedback.reviewedAt, wardName: findWardInUnits(store.regions(), feedback.wardId)?.name || "" };
+      const publicLocation = feedback.status === "approved" ? service.publicLocations().find((item) => item.id === feedback.id) : null;
+      const data = { feedbackId: feedback.id, status: feedback.status, statusLabel: STATUS_LABELS[feedback.status], reviewNote: feedback.reviewNote || "", reviewedAt: feedback.reviewedAt, wardName: findWardInUnits(store.regions(), feedback.wardId)?.name || "", location: publicLocation || null };
       const room = deviceRoomForFeedback(feedback);
       if (room) io.to(room).emit(feedback.status === "approved" ? "feedback-confirmed" : "feedback-rejected", data);
       io.to(`ward:${feedback.wardId}`).to("role:admin").emit("feedback-reviewed", data);
-      if (feedback.status === "approved") io.emit("map:changed", { id: feedback.id });
+      if (feedback.status === "approved") {
+        io.emit("map:changed", { id: feedback.id, wardId: feedback.wardId, location: publicLocation || null });
+      }
+    }
+    if (channel === "notifications:requestUpdate") {
+      const notification = result.notification;
+      if (notification?.wardId) {
+        const wardRoom = `ward:${notification.wardId}`;
+        const recipients = notification.scope
+          ? store.publicUsers().filter((user) => user.role === "ward" && user.username === notification.scope)
+          : store.publicUsers().filter((user) => user.role === "ward" && user.scope === notification.wardId && user.active !== false);
+        for (const recipient of recipients) {
+          const room = `user:${recipient.id}`;
+          io.to(room).emit("notification:new", notification);
+          const sessionId = [...io.sockets.sockets.values()].find((socket) => socket.data.user?.id === recipient.id)?.data.sessionId;
+          const scoped = sessionId ? service.notifications({ sessionId }) : null;
+          if (scoped?.ok) io.to(room).emit("notifications:changed", { wardId: notification.wardId, unread: scoped.unread, type: notification.type });
+          io.to(room).emit("dashboard:counts", { unread: scoped?.ok ? scoped.unread : 0, pending: store.feedbacks().filter((f) => f.status === "pending" && f.wardId === notification.wardId).length });
+        }
+        io.to(wardRoom).emit("notifications:changed", { wardId: notification.wardId, type: notification.type });
+      }
     }
     if (channel.startsWith("notifications:") || channel.startsWith("accounts:") || channel.startsWith("regions:") || channel.startsWith("categories:")) {
       io.emit("data:changed", { channel });
@@ -202,7 +225,14 @@ export function createWebApp(options = {}) {
       socket.data.sessionId = sessionId;
       if (user.role === "admin") socket.join("role:admin");
       if (user.scope) socket.join(`ward:${user.scope}`);
-      socket.emit("officer:ready", { ok: true, user, counts: { pending: store.feedbacks().filter((f) => f.status === "pending" && (user.role === "admin" || f.wardId === user.scope)).length } });
+      socket.join(`user:${user.id}`);
+      const notices = service.notifications({ sessionId });
+      socket.emit("officer:ready", {
+        ok: true,
+        user,
+        counts: { pending: store.feedbacks().filter((f) => f.status === "pending" && (user.role === "admin" || f.wardId === user.scope)).length, unread: notices.ok ? notices.unread : 0 },
+        notifications: notices.ok ? notices.notifications.slice(0, 20) : [],
+      });
       return true;
     };
     const auth = socket.handshake.auth || {};
@@ -228,6 +258,7 @@ export function createWebApp(options = {}) {
   });
   app.get("/api/categories", (_req, res) => res.json({ ok: true, categories: store.categories() }));
   app.get("/api/stats", requireUser, (req, res) => res.json(service.dashboard({ sessionId: req.sessionId })));
+  app.get("/api/notifications", requireUser, (req, res) => res.json(service.notifications({ sessionId: req.sessionId })));
   app.get("/api/channels", (_req, res) => res.json({ ok: true, channels: CHANNELS.filter((x) => !["dialog:pickImages", "image:save"].includes(x)) }));
 
   /* REST auth; cùng AppService/session với RPC cũ. */
@@ -280,7 +311,11 @@ export function createWebApp(options = {}) {
     res.json({ ok: true, ward, officer: officer ? { displayName: officer.displayName, scope: officer.scope } : null, counts: { all: feedbacks.length, pending: feedbacks.filter((x) => x.status === "pending").length, approved: feedbacks.filter((x) => x.status === "approved").length } });
   });
   app.get("/api/documents", (_req, res) => res.json({ ok: true, documents: safeDocumentList() }));
-  app.get("/api/public-locations", (_req, res) => res.json({ ok: true, locations: service.publicLocations(), categories: store.categories() }));
+  app.get("/api/public-locations", (req, res) => {
+    const wardId = String(req.query.wardId || "");
+    const locations = service.publicLocations().filter((item) => !wardId || item.ward === wardId);
+    res.json({ ok: true, locations, categories: store.categories() });
+  });
 
   /* Citizen endpoints: APIs run through the same validation/services as Electron. */
   const feedbackAttempts = new Map();
@@ -313,7 +348,17 @@ export function createWebApp(options = {}) {
 
   app.get("/api/my-feedbacks", (req, res) => {
     const token = deviceTokenFrom(req);
-    res.json(service.myFeedbacks({ deviceToken: token }));
+    const result = service.myFeedbacks({ deviceToken: token });
+    if (!result.ok) return res.json(result);
+    const requestedIds = Array.isArray(req.query.ids)
+      ? req.query.ids
+      : String(req.query.ids || "").split(",").filter(Boolean);
+    if (requestedIds.length) {
+      const allowed = new Set(requestedIds.slice(0, 200));
+      result.feedbacks = result.feedbacks.filter((item) => allowed.has(item.id));
+      result.count = result.feedbacks.length;
+    }
+    res.json(result);
   });
 
   app.get("/api/feedbacks", requireUser, (req, res) => {
@@ -347,6 +392,22 @@ export function createWebApp(options = {}) {
   /* Generic RPC bridge handles all existing app.js channels; never expose file paths. */
   app.post("/api/rpc/:channel", async (req, res) => {
     const channel = req.params.channel;
+    const deviceToken =
+      String(req.headers["x-device-token"] || "").trim() ||
+      String(req.body?.deviceToken || "").trim() ||
+      readCookie(req.headers.cookie, DEVICE_COOKIE);
+    if (channel === "device:myFeedbackIds") {
+      const result = service.myFeedbacks({ deviceToken });
+      return res.json(result.ok ? { ok: true, count: result.count, feedbackIds: result.feedbacks.map((item) => item.id) } : result);
+    }
+    if (channel === "device:myFeedbacks") {
+      const result = service.myFeedbacks({ deviceToken });
+      if (!result.ok) return res.json(result);
+      const ids = Array.isArray(req.body?.feedbackIds) ? req.body.feedbackIds.slice(0, 200) : [];
+      if (ids.length) result.feedbacks = result.feedbacks.filter((item) => ids.includes(item.id));
+      result.count = result.feedbacks.length;
+      return res.json(result);
+    }
     if (!CHANNELS.includes(channel)) return res.status(404).json({ ok: false, code: "UNKNOWN_CHANNEL", errors: [`Kênh không hỗ trợ: ${channel}`] });
     if (["dialog:pickImages", "image:save"].includes(channel)) return res.status(400).json({ ok: false, code: "WEB_UPLOAD_REQUIRED", errors: ["Dùng chức năng tải ảnh web."] });
     if (channel === "feedback:review" && req.body?.status === "approved") {
@@ -354,6 +415,7 @@ export function createWebApp(options = {}) {
       if (feedback?.status === "approved") return res.status(409).json({ ok: false, code: "ALREADY_CONFIRMED", errors: ["Phản hồi này đã được xác nhận."] });
     }
     const payload = { ...(req.body || {}) };
+    if (channel.startsWith("device:")) payload.deviceToken = deviceToken;
     const token = sessionFor(req);
     if (token) payload.sessionId = token;
     if (channel === "feedback:submit") {
@@ -380,7 +442,7 @@ export function createWebApp(options = {}) {
         if (!req.headers["x-device-token"] && !readCookie(req.headers.cookie, DEVICE_COOKIE)) {
           res.cookie(DEVICE_COOKIE, rawToken, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 365 * 86400000, path: "/" });
         }
-        return res.json({ ...result, deviceToken: req.headers["x-device-token"] ? rawToken : undefined });
+        return res.json({ ...result, deviceToken: rawToken, feedback: store.feedbacks().find((item) => item.id === result.feedbackId) || null });
       }
       return res.json(result);
     } catch (error) {
@@ -437,8 +499,11 @@ export function createWebApp(options = {}) {
   app.get(["/", "/index.html"], (_req, res) => {
     if (!existsSync(indexFile)) return res.status(404).send("index.html missing");
     let html = readFileSync(indexFile, "utf8");
-    const scripts = '<script src="/socket.io/socket.io.js"></script>\n  <script src="/js/khanhHoa-web.js"></script>\n  <script src="app.js"></script>';
-    html = html.replace(/<script\s+src=["']app\.js["']\s*>\s*<\/script>/i, scripts);
+    // index.html remains Electron-safe; inject browser-only scripts at the public server edge.
+    if (!html.includes('src="/socket.io/socket.io.js"')) {
+      html = html.replace(/<script\s+src=["']app\.js["']\s*>\s*<\/script>/i,
+        '<script src="/socket.io/socket.io.js"></script>\n  <script src="/js/khanhHoa-web.js"></script>\n  <script src="app.js"></script>');
+    }
     if (!html.includes('id="imageFileInput"')) {
       html = html.replace("</body>", '  <input id="imageFileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>\n</body>');
     }
