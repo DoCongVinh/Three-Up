@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: file: https://*.google.com https://*.googleapis.com https://*.gstatic.com https://unpkg.com; connect-src 'self' https://*.google.com https://*.googleapis.com https://*.gstatic.com data: blob:; worker-src blob:;">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="Bản đồ Yêu thương Khánh Hòa - ứng dụng desktop kết nối điểm hỗ trợ, nhu cầu cộng đồng và xác minh của Phường/Xã.">
+  <title>Bản đồ Yêu thương Khánh Hòa</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root { color-scheme: light; --brand: #0f766e; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body { overflow: hidden; font-family: Inter, "Segoe UI", ui-sans-serif, system-ui, sans-serif; }
+    .app-drag { -webkit-app-region: drag; }
+    .app-drag button, .app-drag input, .app-drag select, .app-drag a { -webkit-app-region: no-drag; }
+    #map { width: 100%; height: 100%; background: #e5e7eb; }
+    .leaflet-container { font: inherit; }
+    .leaflet-popup-content-wrapper { border-radius: 14px; }
+    .custom-marker { display: grid; place-items: center; width: 38px; height: 38px; border: 3px solid white; border-radius: 50% 50% 50% 8px; transform: rotate(-45deg); box-shadow: 0 3px 10px #0f172a40; }
+    .custom-marker span { transform: rotate(45deg); font-size: 17px; line-height: 1; }
+    .scroll-thin { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+    /* Tab header: trạng thái active rõ ràng (JS bật/tắt class .tab-active + aria-selected). */
+    .tab-btn { color: #475569; transition: background-color .15s ease, color .15s ease, box-shadow .15s ease; }
+    .tab-btn:hover { background: #ffffff99; color: #0f766e; }
+    .tab-btn:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
+    .tab-btn[aria-selected="true"], .tab-btn.tab-active {
+      background: #ffffff; color: #115e59; box-shadow: 0 1px 2px rgba(15, 23, 42, .12);
+    }
+    .tab-btn:disabled { opacity: .5; cursor: not-allowed; }
+    /* Bản đồ: khung Leaflet luôn lấp đầy cột phải, không bị xám khi đổi tab. */
+    .map-frame { position: relative; min-width: 0; flex: 1 1 0%; background: #e5e7eb; }
+    input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #0f766e; outline-offset: 1px; }
+    [hidden] { display: none !important; }
+  </style>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="bg-slate-100 text-slate-800">
+  <!-- ===================== VIDEO / VIEW: LOGIN ===================== -->
+  <main id="loginView" class="flex h-full w-full items-center justify-center bg-gradient-to-br from-teal-900 via-teal-800 to-emerald-900 p-6">
+    <div class="grid w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl md:grid-cols-2">
+      <section class="hidden flex-col justify-between bg-teal-800 p-8 text-white md:flex">
+        <div>
+          <span class="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 text-2xl" aria-hidden="true">💚</span>
+          <h1 class="mt-6 text-2xl font-bold leading-tight">Bản đồ Yêu thương<br>Khánh Hòa</h1>
+          <p class="mt-3 text-sm leading-relaxed text-teal-100">
+            Kết nối điểm hỗ trợ, nhu cầu cộng đồng và quy trình xác minh của
+            Phường/Xã trên một nền tảng desktop dùng offline.
+          </p>
+        </div>
+        <ul class="mt-8 space-y-3 text-sm text-teal-50">
+          <li class="flex gap-2"><span aria-hidden="true">🛡️</span> Phân quyền 2 cấp: Cấp Tỉnh và Cán bộ Xã/Phường</li>
+          <li class="flex gap-2"><span aria-hidden="true">📍</span> Phản hồi kèm GPS, bản đồ và hình ảnh</li>
+          <li class="flex gap-2"><span aria-hidden="true">✅</span> Cán bộ duyệt đúng địa bàn trước khi công bố</li>
+        </ul>
+        <p class="mt-8 text-xs text-teal-200/80">Dữ liệu lưu trên máy tính này (JSON + thư mục ảnh).</p>
+      </section>
+
+      <section class="p-8 sm:p-10">
+        <div class="flex items-center gap-2 md:hidden">
+          <span class="grid h-9 w-9 place-items-center rounded-xl bg-teal-50 text-lg" aria-hidden="true">💚</span>
+          <p class="font-bold text-teal-800">Bản đồ Yêu thương Khánh Hòa</p>
+        </div>
+        <h2 class="mt-4 text-xl font-bold text-slate-900 md:mt-0">Đăng nhập hệ thống</h2>
+        <p class="mt-1 text-sm text-slate-500">Dành cho Cấp Tỉnh và Cán bộ Phường/Xã.</p>
+
+        <form id="loginForm" class="mt-6 space-y-4" novalidate>
+          <label class="block text-xs font-semibold text-slate-600">Tên đăng nhập
+            <input id="loginUsername" name="username" autocomplete="username" required
+                   class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100">
+          </label>
+          <label class="block text-xs font-semibold text-slate-600">Mật khẩu
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" required
+                   class="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100">
+          </label>
+          <p id="loginError" class="hidden rounded-xl bg-red-50 p-3 text-sm text-red-800" role="alert"></p>
+          <button id="loginSubmit" type="submit"
+                  class="w-full rounded-xl bg-teal-700 px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-teal-800 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 disabled:opacity-60">
+            Đăng nhập
+          </button>
+        </form>
+
+        <div class="mt-6 border-t border-slate-200 pt-4">
+          <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Người dân / Mạnh thường quân</p>
+          <button id="openPublicForm" type="button"
+                  class="mt-2 w-full rounded-xl border border-teal-700 px-4 py-2.5 text-sm font-bold text-teal-800 transition hover:bg-teal-50">
+            📝 Gửi phản hồi / Bổ sung thông tin
+          </button>
+          <button id="openPublicMap" type="button"
+                  class="mt-2 w-full rounded-xl px-4 py-2 text-xs font-semibold text-slate-500 hover:text-teal-700">
+            Xem bản đồ công khai (không cần đăng nhập)
+          </button>
+          <button id="openMyFeedback" type="button"
+                  class="mt-2 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
+            📨 Phản hồi tôi đã gửi (thiết bị này)
+          </button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===================== VIEW: WORKSPACE ===================== -->
+  <main id="appView" class="flex h-full w-full flex-col" hidden>
+    <!-- Windows-style title bar -->
+    <header class="app-drag flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2">
+      <div class="flex items-center gap-2">
+        <span class="grid h-8 w-8 place-items-center rounded-lg bg-teal-700 text-base" aria-hidden="true">💚</span>
+        <div class="leading-tight">
+          <p class="text-sm font-bold text-slate-800">Bản đồ Yêu thương Khánh Hòa</p>
+          <p id="titleBarScope" class="text-[11px] text-slate-500">Ứng dụng desktop</p>
+        </div>
+      </div>
+      <nav id="mainTabs" class="app-drag flex items-center gap-1 rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Khu vực chức năng">
+        <button type="button" role="tab" id="tab-map" aria-controls="mapView" data-view="map" class="tab-btn rounded-lg px-3 py-1.5 text-xs font-bold">🗺️ Bản đồ</button>
+        <button type="button" role="tab" id="tab-feedback" aria-controls="feedbackView" data-view="feedback" class="tab-btn rounded-lg px-3 py-1.5 text-xs font-bold">📨 Phản hồi</button>
+        <button type="button" role="tab" id="tab-directory" aria-controls="directoryView" data-view="directory" class="tab-btn rounded-lg px-3 py-1.5 text-xs font-bold">📊 Xã/Phường</button>
+        <button type="button" role="tab" id="tab-accounts" aria-controls="accountsView" data-view="accounts" class="tab-btn rounded-lg px-3 py-1.5 text-xs font-bold" data-admin-only hidden>👥 Tài khoản</button>
+      </nav>
+      <div class="flex items-center gap-3">
+        <div class="text-right leading-tight">
+          <p id="currentUserName" class="text-xs font-bold text-slate-800">—</p>
+          <p id="currentUserRole" class="text-[11px] text-slate-500">—</p>
+        </div>
+        <button id="openProfile" type="button" class="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">Hồ sơ</button>
+
+        <!-- Chuông thông báo: khẩn cấp, phản hồi mới, nhắc duyệt -->
+        <div class="relative">
+          <button id="bellButton" type="button" aria-label="Thông báo" aria-expanded="false" aria-controls="notificationPanel"
+                  class="relative grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-base text-slate-600 hover:bg-slate-50">
+            🔔
+            <span id="bellBadge" class="absolute -right-1 -top-1 hidden min-w-[18px] rounded-full bg-red-600 px-1 text-center text-[10px] font-bold leading-[18px] text-white">0</span>
+          </button>
+          <div id="notificationPanel" class="absolute right-0 z-[900] mt-2 hidden w-[360px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl" role="dialog" aria-label="Danh sách thông báo">
+            <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <p class="text-sm font-bold text-slate-800">Thông báo</p>
+              <button id="markAllReadButton" type="button" class="text-[11px] font-semibold text-teal-700 hover:underline">Đánh dấu đã đọc</button>
+            </div>
+            <div id="notificationList" class="scroll-thin max-h-[60vh] space-y-1 overflow-y-auto p-2" aria-live="polite"></div>
+            <div id="notifyReviewersBox" class="hidden border-t border-slate-200 bg-slate-50 px-3 py-2">
+              <button id="notifyReviewersButton" type="button" class="w-full rounded-xl bg-amber-500 px-3 py-2 text-xs font-bold text-white hover:bg-amber-600">📣 Nhắc cán bộ duyệt phản hồi</button>
+              <p class="mt-1 text-center text-[10px] text-slate-500">Gửi thông báo tới cán bộ còn phản hồi chờ duyệt</p>
+            </div>
+          </div>
+        </div>
+
+        <button id="logoutButton" type="button" class="rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200">Đăng xuất</button>
+      </div>
+    </header>
+
+    <!-- Cảnh báo khẩn cấp: hiện ngay khi có phản hồi nhóm "Thông tin khẩn cấp" -->
+    <div id="emergencyBanner" class="hidden items-center gap-3 bg-red-600 px-4 py-2 text-white" role="alert" aria-live="assertive"></div>
+
+    <!-- ============ TAB CONTENT CONTAINERS (chỉ 1 cái hiển thị tại 1 thời điểm) ============ -->
+
+    <!-- ===== TAB 1: BẢN ĐỒ ===== -->
+    <div id="mapView" class="relative flex min-h-0 flex-1" role="tabpanel" aria-labelledby="tab-map">
+      <!-- Sidebar: thanh lọc địa bàn + danh sách điểm đã duyệt -->
+      <aside class="scroll-thin flex w-[360px] shrink-0 flex-col overflow-hidden border-r border-slate-200 bg-white">
+        <section class="border-b border-slate-200 px-4 py-4">
+          <h2 class="text-sm font-bold text-slate-800">Lọc theo địa bàn</h2>
+          <label for="wardFilter" class="mt-2 block text-xs font-semibold text-slate-500">Phường / Xã</label>
+          <select id="wardFilter" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600">
+            <option value="all">Toàn tỉnh Khánh Hòa</option>
+          </select>
+          <!-- Giữ id regionSelect cho tương thích (ẩn, luôn = "all") -->
+          <select id="regionSelect" class="hidden" aria-hidden="true" tabindex="-1">
+            <option value="all" selected>Toàn tỉnh Khánh Hòa</option>
+          </select>
+        </section>
+
+        <section class="border-b border-slate-200 px-4 py-4">
+          <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Nhóm thông tin</p>
+          <div id="categoryFilters" class="mt-2 flex flex-wrap gap-2" role="group" aria-label="Lọc theo nhóm thông tin">
+            <button type="button" data-category="all" class="category-button rounded-full border border-teal-700 bg-teal-700 px-3 py-1.5 text-xs font-semibold text-white">📋 Tất cả</button>
+            <button type="button" data-category="ho_tro" class="category-button rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">🍲 Điểm hỗ trợ</button>
+            <button type="button" data-category="chinh_sach" class="category-button rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">📜 Chính sách</button>
+            <button type="button" data-category="nhu_cau" class="category-button rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">🤝 Nhu cầu</button>
+            <button type="button" data-category="khan_cap" class="category-button rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700">🚨 Khẩn cấp</button>
+          </div>
+        </section>
+
+        <section class="flex min-h-0 flex-1 flex-col border-b border-slate-200 px-4 py-4">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-bold text-slate-800">Địa điểm trên bản đồ</h2>
+            <span id="resultCount" class="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-bold text-teal-800">0 địa điểm</span>
+          </div>
+          <p class="mt-1 text-[11px] leading-relaxed text-slate-500">Chỉ các phản hồi đã được Cán bộ Xã/Phường duyệt mới xuất hiện trên bản đồ.</p>
+          <div id="locationList" class="scroll-thin mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1" aria-live="polite"></div>
+        </section>
+
+        <section class="px-4 py-4">
+          <button id="openFeedbackFromApp" type="button"
+                  class="w-full rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-800">
+            ＋ Gửi phản hồi mới
+          </button>
+          <p class="mt-2 text-[11px] leading-relaxed text-slate-500">Nhóm phát triển ứng dụng: Three Up — 3 tổ dân phố “Thuận Lợi, Thuận Hải, Thuận Thành”</p>
+        </section>
+      </aside>
+
+      <!-- Khung bản đồ Leaflet -->
+      <section class="map-frame" aria-label="Bản đồ các điểm hỗ trợ">
+        <div id="map" role="application" aria-label="Bản đồ Khánh Hòa"></div>
+        <button id="locateButton" type="button" title="Về vị trí Khánh Hòa" aria-label="Về vị trí Khánh Hòa"
+                class="absolute bottom-5 right-5 z-[500] grid h-11 w-11 place-items-center rounded-xl bg-white text-xl text-teal-800 shadow-lg hover:bg-teal-50">◎</button>
+        <div id="mapLegend" class="pointer-events-none absolute bottom-5 left-5 z-[500] hidden rounded-xl bg-white/95 px-3 py-2 text-[11px] shadow-lg sm:flex sm:flex-wrap sm:items-center sm:gap-3"></div>
+        <!-- Cảnh báo khi không tải được ảnh nền bản đồ (mạng chặn tile / offline). -->
+        <div id="mapTileWarning" class="absolute inset-x-4 top-4 z-[600] hidden rounded-2xl border border-amber-200 bg-amber-50/95 p-4 text-center shadow-lg md:left-1/2 md:right-auto md:w-[420px] md:-translate-x-1/2" role="status" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <!-- ===== TAB 2: PHẢN HỒI (hàng đợi chờ duyệt) ===== -->
+    <section id="feedbackView" class="flex min-h-0 flex-1" role="tabpanel" aria-labelledby="tab-feedback" hidden>
+      <!-- Cột trái: danh sách -->
+      <div class="flex w-[340px] shrink-0 flex-col border-r border-slate-200 bg-white">
+        <div class="border-b border-slate-200 px-4 py-4">
+          <div class="flex items-center justify-between gap-2">
+            <h2 id="queueTitle" class="text-sm font-bold text-slate-800">Hàng đợi phản hồi</h2>
+            <span id="queueScopeBadge" class="rounded-full bg-teal-50 px-2 py-0.5 text-[10px] font-bold text-teal-800">—</span>
+          </div>
+          <p id="queueSubtitle" class="mt-1 text-[11px] leading-relaxed text-slate-500"></p>
+          <div id="statusFilters" class="mt-3 flex flex-wrap gap-1.5" role="group" aria-label="Lọc theo trạng thái">
+            <button type="button" data-status="pending" class="status-btn rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold">Chờ duyệt <span data-count="pending">0</span></button>
+            <button type="button" data-status="approved" class="status-btn rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold">Đã duyệt <span data-count="approved">0</span></button>
+            <button type="button" data-status="rejected" class="status-btn rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold">Từ chối <span data-count="rejected">0</span></button>
+            <button type="button" data-status="all" class="status-btn rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-bold">Tất cả <span data-count="all">0</span></button>
+          </div>
+        </div>
+        <div id="feedbackList" class="scroll-thin min-h-0 flex-1 space-y-2 overflow-y-auto p-3" aria-live="polite"></div>
+      </div>
+
+      <!-- Cột phải: chi tiết + nút duyệt -->
+      <div id="feedbackDetail" class="scroll-thin min-w-0 flex-1 overflow-y-auto p-6" aria-live="polite">
+        <div class="rounded-2xl border border-dashed border-slate-300 p-8 text-center">
+          <p class="text-3xl" aria-hidden="true">📨</p>
+          <p class="mt-2 text-sm font-bold text-slate-700">Chọn một phản hồi để xem chi tiết</p>
+          <p class="mt-1 text-xs text-slate-500">Chi tiết gồm thông tin người gửi, hình ảnh, định vị GPS và nút “Xác nhận / Phê duyệt”.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== TAB 3: XÃ/PHƯỜNG (danh mục hành chính + thống kê) ===== -->
+    <section id="directoryView" class="scroll-thin min-h-0 flex-1 overflow-y-auto bg-slate-100 p-6" role="tabpanel" aria-labelledby="tab-directory" hidden>
+      <div class="mx-auto max-w-6xl">
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-slate-900">Danh sách Phường/Xã</h2>
+            <p id="directorySubtitle" class="mt-1 text-sm text-slate-500">Đơn vị hành chính cấp xã/phường tại Khánh Hòa (2 cấp sau sáp nhập), kèm số tài khoản cán bộ và điểm hỗ trợ.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <div id="directoryTotals" class="flex flex-wrap gap-2 text-xs"></div>
+            <button id="addWardButton" type="button" data-admin-only hidden
+                    class="rounded-xl bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-800">＋ Thêm phường/xã</button>
+          </div>
+        </div>
+        <div id="directoryGrid" class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-live="polite"></div>
+        <div id="directoryDetail" class="mt-6 hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <!-- ===== TAB 4: TÀI KHOẢN (quản trị cấp tỉnh) ===== -->
+    <section id="accountsView" class="scroll-thin min-h-0 flex-1 overflow-y-auto bg-slate-100 p-6" role="tabpanel" aria-labelledby="tab-accounts" hidden>
+      <div class="mx-auto grid max-w-6xl items-start gap-5 lg:grid-cols-[420px_1fr]">
+        <!-- Form tạo tài khoản -->
+        <form id="createAccountForm" class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" novalidate>
+          <h2 class="text-lg font-bold text-slate-900">Tạo tài khoản Xã/Phường</h2>
+          <p class="mt-1 text-xs leading-relaxed text-slate-500">Chọn Phường/Xã — tài khoản sẽ tự động được phân quyền và xếp vào đúng địa bàn.</p>
+
+          <!-- Giữ id accountRegion cho tương thích (ẩn, tự đồng bộ theo phường/xã) -->
+          <select id="accountRegion" class="hidden" aria-hidden="true" tabindex="-1"></select>
+          <label class="mt-4 block text-xs font-semibold text-slate-600" for="accountWard">Phường / Xã <span class="text-red-600">*</span>
+            <select id="accountWard" name="wardId" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600"></select>
+          </label>
+          <p id="accountWardHint" class="mt-1 text-[11px] text-slate-500"></p>
+          <div id="accountWardMeta" class="mt-2 hidden rounded-xl bg-slate-50 p-2.5 text-[11px] text-slate-600"></div>
+
+          <label class="mt-3 block text-xs font-semibold text-slate-600" for="accountName">Họ tên cán bộ <span class="text-red-600">*</span>
+            <input id="accountName" name="displayName" required minlength="3" maxlength="80"
+                   class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: Nguyễn Thị Lan">
+          </label>
+          <label class="mt-3 block text-xs font-semibold text-slate-600" for="accountUsername">Tên đăng nhập <span class="text-red-600">*</span>
+            <input id="accountUsername" name="username" required minlength="4" maxlength="32" autocomplete="off" spellcheck="false"
+                   class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="vd: camlinh.cb">
+          </label>
+          <p class="mt-1 text-[11px] text-slate-500">4–32 ký tự: a–z, 0–9, dấu chấm hoặc gạch dưới.</p>
+          <label class="mt-3 block text-xs font-semibold text-slate-600" for="accountPassword">Mật khẩu ban đầu <span class="text-red-600">*</span>
+            <input id="accountPassword" name="password" type="text" required minlength="8" maxlength="72" autocomplete="new-password"
+                   class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="Tối thiểu 8 ký tự">
+          </label>
+          <label class="mt-3 flex items-start gap-2 text-xs font-semibold text-slate-600">
+            <input id="accountMustChange" type="checkbox" checked class="mt-0.5 h-4 w-4 rounded border-slate-300">
+            <span>Bắt buộc đổi mật khẩu ở lần đăng nhập đầu</span>
+          </label>
+
+          <div id="accountFormMessage" class="mt-3 hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+          <button type="submit" class="mt-4 w-full rounded-xl bg-teal-700 px-4 py-3 text-sm font-bold text-white hover:bg-teal-800 disabled:opacity-60">Tạo tài khoản</button>
+        </form>
+
+        <!-- Danh sách tài khoản -->
+        <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">Tài khoản cán bộ trong hệ thống</h2>
+              <p class="mt-0.5 text-xs text-slate-500">Nhóm theo khu vực; khóa tài khoản sẽ hủy phiên đăng nhập ngay lập tức.</p>
+            </div>
+            <span id="accountCount" class="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-bold text-teal-800">0 tài khoản</span>
+          </div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <label class="sr-only" for="accountFilterRegion">Lọc theo địa bàn</label>
+            <select id="accountFilterRegion" class="rounded-xl border border-slate-200 px-3 py-2 text-xs">
+              <option value="all">Tất cả địa bàn</option>
+            </select>
+            <label class="sr-only" for="accountSearch">Tìm tài khoản</label>
+            <input id="accountSearch" type="search" placeholder="Tìm theo tên hoặc tên đăng nhập…"
+                   class="min-w-[220px] flex-1 rounded-xl border border-slate-200 px-3 py-2 text-xs">
+          </div>
+          <div id="accountList" class="mt-3 space-y-2" aria-live="polite"></div>
+
+          <!-- Kết quả lọc: xem nhanh tài khoản của một phường/xã và các điểm đã duyệt -->
+          <div id="accountResult" class="mt-4 hidden rounded-xl border border-teal-200 bg-teal-50/50 p-3" aria-live="polite"></div>
+        </div>
+
+        <!-- Nhóm thông tin: admin tự thêm nhóm mới -> hiện ngay ở form phản hồi & bộ lọc bản đồ -->
+        <div class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">Nhóm thông tin</h2>
+              <p class="mt-0.5 text-xs text-slate-500">Nhóm mới (VD: Người khuyết tật, Nhà thương binh) xuất hiện ngay trong form gửi phản hồi và bộ lọc bản đồ.</p>
+            </div>
+            <button id="addCategoryButton" type="button"
+                    class="rounded-xl bg-teal-700 px-3 py-2 text-xs font-bold text-white hover:bg-teal-800">＋ Thêm nhóm</button>
+          </div>
+          <div id="categoryAdminList" class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+
+  <!-- ===================== MODAL: FEEDBACK FORM ===================== -->
+  <div id="feedbackModal" class="fixed inset-0 z-[1000] hidden items-end justify-center bg-slate-950/55 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
+    <div class="max-h-[94vh] w-full overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:max-w-2xl sm:rounded-2xl sm:p-6">
+      <div class="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <h2 id="feedbackModalTitle" class="text-lg font-bold text-slate-900">Gửi phản hồi / Bổ sung thông tin</h2>
+          <p class="mt-1 text-xs leading-relaxed text-slate-500">Thông tin được chuyển thẳng tới Cán bộ Phường/Xã tương ứng để kiểm tra và xác nhận.</p>
+        </div>
+        <button id="closeFeedbackModal" type="button" aria-label="Đóng biểu mẫu" class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-100 text-lg text-slate-600 hover:bg-slate-200">×</button>
+      </div>
+
+      <form id="feedbackForm" class="space-y-3" novalidate>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block text-xs font-semibold text-slate-600">Họ tên <span class="text-red-600">*</span>
+            <input name="fullName" required maxlength="80" autocomplete="name"
+                   class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: Nguyễn Văn An">
+          </label>
+          <label class="block text-xs font-semibold text-slate-600">Số điện thoại <span class="text-red-600">*</span>
+            <input name="phone" type="tel" required maxlength="20" autocomplete="tel"
+                   class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: 0905 123 456">
+          </label>
+          <label class="block text-xs font-semibold text-slate-600">Email <span class="text-red-600">*</span>
+            <input name="email" type="email" required maxlength="120" autocomplete="email"
+                   class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: ten@example.com">
+          </label>
+          <label class="block text-xs font-semibold text-slate-600">Nhóm thông tin <span class="text-red-600">*</span>
+            <select name="category" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+              <option value="ho_tro">🍲 Điểm hỗ trợ</option>
+              <option value="chinh_sach">📜 Chính sách &amp; Quyền lợi</option>
+              <option value="nhu_cau">🤝 Nhu cầu thực tế</option>
+              <option value="khan_cap">🚨 Thông tin khẩn cấp</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Hành chính 2 cấp: Tỉnh (cố định) -> Phường/Xã. Không còn cấp huyện sau sáp nhập. -->
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block text-xs font-semibold text-slate-600">Tỉnh
+            <input id="feedbackProvince" value="Khánh Hòa" readonly aria-readonly="true"
+                   class="mt-1 w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
+            <span class="mt-1 block text-[10px] text-slate-400">Cố định — không thể thay đổi</span>
+          </label>
+          <label class="block text-xs font-semibold text-slate-600">Phường / Xã <span class="text-red-600">*</span>
+            <select name="wardId" id="feedbackWard" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+              <option value="">— Chọn Phường / Xã —</option>
+            </select>
+            <span class="mt-1 block text-[10px] text-slate-400">Danh sách nhóm theo khu vực để dễ tìm</span>
+          </label>
+          <!-- Giữ id feedbackRegion cho tương thích code cũ (ẩn, tự đồng bộ theo phường/xã) -->
+          <select id="feedbackRegion" class="hidden" aria-hidden="true" tabindex="-1"></select>
+        </div>
+
+        <label class="block text-xs font-semibold text-slate-600">Thôn / Tổ dân phố <span class="text-red-600">*</span>
+          <select name="hamlet" id="feedbackHamlet" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+            <option value="">— Chọn thôn / tổ dân phố —</option>
+          </select>
+          <span class="mt-1 block text-[11px] text-slate-500">Danh sách tự động thay đổi theo Phường/Xã đã chọn.</span>
+        </label>
+
+        <label class="block text-xs font-semibold text-slate-600">Địa chỉ chi tiết <span class="text-red-600">*</span>
+          <input name="address" required maxlength="180"
+                 class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="Số nhà, đường, thôn/tổ dân phố">
+        </label>
+
+        <label class="block text-xs font-semibold text-slate-600">Lý do / Nội dung <span class="text-red-600">*</span>
+          <textarea name="reason" required maxlength="700" rows="4"
+                    class="mt-1 w-full resize-y rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600"
+                    placeholder="Mô tả điểm hỗ trợ, hoàn cảnh cần giúp hoặc thông tin cần xác minh..."></textarea>
+        </label>
+
+        <fieldset class="rounded-xl border border-slate-200 p-3">
+          <legend class="px-1 text-xs font-bold text-slate-600">Định vị</legend>
+          <p class="text-[11px] text-slate-500">Lấy GPS của máy hoặc bấm trực tiếp trên bản đồ để chọn điểm.</p>
+          <div class="mt-2 grid grid-cols-2 gap-2">
+            <label class="block text-[11px] font-semibold text-slate-500">Vĩ độ
+              <input name="lat" id="feedbackLat" readonly class="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-xs" placeholder="Chưa có">
+            </label>
+            <label class="block text-[11px] font-semibold text-slate-500">Kinh độ
+              <input name="lng" id="feedbackLng" readonly class="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-xs" placeholder="Chưa có">
+            </label>
+          </div>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button id="gpsButton" type="button" class="rounded-lg bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800 hover:bg-teal-100">📍 Lấy vị trí GPS</button>
+            <button id="pickOnMapButton" type="button" class="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">🗺️ Chọn trên bản đồ</button>
+            <span id="gpsStatus" class="self-center text-[11px] text-slate-500"></span>
+          </div>
+        </fieldset>
+
+        <fieldset class="rounded-xl border border-slate-200 p-3">
+          <legend class="px-1 text-xs font-bold text-slate-600">Hình ảnh đính kèm</legend>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <button id="pickImagesButton" type="button" class="rounded-lg bg-slate-100 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200">🖼️ Chọn ảnh</button>
+            <span class="text-[11px] text-slate-500">Tối đa 5 ảnh, PNG/JPG/WEBP, mỗi ảnh ≤ 5MB.</span>
+          </div>
+          <ul id="imageList" class="mt-2 flex flex-wrap gap-2"></ul>
+          <div id="imagePickerFallback" class="mt-2 hidden">
+            <input id="imageFileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple class="w-full text-xs">
+          </div>
+        </fieldset>
+
+        <p class="rounded-xl bg-amber-50 p-3 text-xs leading-relaxed text-amber-900">
+          Vui lòng không gửi thông tin cá nhân nhạy cảm của người khác khi chưa được đồng ý. Thông tin sẽ được Cán bộ Phường/Xã xác minh trước khi công bố.
+        </p>
+
+        <div id="feedbackFormMessage" class="hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+        <div class="flex gap-2 pt-1">
+          <button id="cancelFeedback" type="button" class="flex-1 rounded-xl bg-slate-100 px-4 py-3 text-sm font-bold text-slate-700 hover:bg-slate-200">Hủy</button>
+          <button id="submitFeedback" type="submit" class="flex-1 rounded-xl bg-teal-700 px-4 py-3 text-sm font-bold text-white hover:bg-teal-800 disabled:opacity-60">Gửi tới Phường/Xã</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: EDIT PROFILE ===================== -->
+  <div id="profileModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
+    <form id="profileForm" class="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" novalidate>
+      <div class="flex items-start justify-between">
+        <h2 id="profileTitle" class="text-lg font-bold text-slate-900">Tài khoản của tôi</h2>
+        <button id="closeProfile" type="button" class="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-600">×</button>
+      </div>
+      <p id="profileMeta" class="mt-1 text-xs text-slate-500"></p>
+
+      <!-- Khách xem bản đồ công khai: không có tài khoản, không thể đổi thông tin/mật khẩu. -->
+      <div id="profileGuestNotice" class="mt-4 hidden rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs leading-relaxed text-teal-900">
+        Bạn đang xem bản đồ ở chế độ <strong>khách</strong> (không cần đăng nhập).
+        Chế độ này không có tài khoản nên <strong>không thể đổi mật khẩu</strong>.
+        Hãy đăng nhập bằng tài khoản Cấp Tỉnh hoặc Cán bộ Xã/Phường để quản lý tài khoản.
+      </div>
+
+      <div id="profileFields">
+        <label class="mt-4 block text-xs font-semibold text-slate-600">Họ tên hiển thị
+          <input id="profileName" name="displayName" required minlength="3" maxlength="80"
+                 class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+        </label>
+        <hr class="my-4 border-slate-200">
+        <p class="text-xs font-bold uppercase tracking-wide text-slate-500">Đổi mật khẩu (tùy chọn)</p>
+        <label class="mt-2 block text-xs font-semibold text-slate-600">Mật khẩu hiện tại
+          <input id="oldPassword" type="password" autocomplete="current-password" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+        </label>
+        <label class="mt-2 block text-xs font-semibold text-slate-600">Mật khẩu mới
+          <input id="newPassword" type="password" autocomplete="new-password" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+        </label>
+      </div>
+
+      <div id="profileMessage" class="mt-3 hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+      <div class="mt-4 flex gap-2">
+        <button id="cancelProfile" type="button" class="flex-1 rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-bold text-slate-700">Hủy</button>
+        <button id="profileSubmit" type="submit" class="flex-1 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">Lưu</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ===================== MODAL: THÊM / SỬA PHƯỜNG-XÃ ===================== -->
+  <div id="wardModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="wardModalTitle">
+    <form id="wardForm" class="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl" novalidate>
+      <div class="flex items-start justify-between">
+        <div>
+          <h2 id="wardModalTitle" class="text-lg font-bold text-slate-900">Thêm phường/xã</h2>
+          <p class="mt-1 text-xs text-slate-500">Đơn vị mới sẽ xuất hiện ngay trong bộ lọc bản đồ, form phản hồi và form tạo tài khoản.</p>
+        </div>
+        <button id="closeWardModal" type="button" aria-label="Đóng" class="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">×</button>
+      </div>
+
+      <label class="mt-4 block text-xs font-semibold text-slate-600" for="wardDistrict">Khu vực <span class="text-red-600">*</span>
+        <select id="wardDistrict" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600"></select>
+      </label>
+      <label class="mt-3 block text-xs font-semibold text-slate-600" for="wardNameInput">Tên Phường / Xã / Đặc khu <span class="text-red-600">*</span>
+        <input id="wardNameInput" required minlength="3" maxlength="120" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: Phường Cam Linh">
+      </label>
+      <label class="mt-3 block text-xs font-semibold text-slate-600" for="wardOldUnits">Đơn vị cũ sau sáp nhập
+        <input id="wardOldUnits" maxlength="300" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: Sáp nhập phường Cam Thuận, Cam Lợi và Cam Linh">
+      </label>
+      <label class="mt-3 block text-xs font-semibold text-slate-600" for="wardHamlets">Thôn / Tổ dân phố (mỗi dòng một tên) <span class="text-red-600">*</span>
+        <textarea id="wardHamlets" required rows="4" class="scroll-thin mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="Tổ dân phố 1&#10;Tổ dân phố 2"></textarea>
+      </label>
+
+      <div id="wardFormMessage" class="mt-3 hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+      <div class="mt-4 flex gap-2">
+        <button id="cancelWardModal" type="button" class="flex-1 rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-bold text-slate-700">Hủy</button>
+        <button id="wardSubmit" type="submit" class="flex-1 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-800 disabled:opacity-60">Lưu</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ===================== MODAL: THÊM / SỬA NHÓM THÔNG TIN ===================== -->
+  <div id="categoryModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="categoryModalTitle">
+    <form id="categoryForm" class="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" novalidate>
+      <div class="flex items-start justify-between">
+        <div>
+          <h2 id="categoryModalTitle" class="text-lg font-bold text-slate-900">Thêm nhóm thông tin</h2>
+          <p class="mt-1 text-xs text-slate-500">Nhóm mới sẽ xuất hiện ngay trong form gửi phản hồi và bộ lọc bản đồ.</p>
+        </div>
+        <button id="closeCategoryModal" type="button" aria-label="Đóng" class="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">×</button>
+      </div>
+
+      <label class="mt-4 block text-xs font-semibold text-slate-600" for="categoryLabel">Tên nhóm <span class="text-red-600">*</span>
+        <input id="categoryLabel" required minlength="2" maxlength="60" class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600" placeholder="VD: Người khuyết tật">
+      </label>
+      <div class="mt-3">
+        <p class="text-xs font-semibold text-slate-600">Biểu tượng <span class="font-normal text-slate-400">(bấm để chọn)</span></p>
+        <!-- Lưới icon click chọn: người dùng nhìn là nhận ra nhóm thông tin -->
+        <div id="iconPicker" class="mt-1 grid max-h-[168px] grid-cols-8 gap-1 overflow-y-auto rounded-xl border border-slate-200 p-2" role="radiogroup" aria-label="Chọn biểu tượng nhóm"></div>
+        <label class="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+          Hoặc nhập icon khác:
+          <input id="categoryIcon" maxlength="8" class="w-20 rounded-lg border border-slate-200 px-2 py-1 text-center text-sm" placeholder="♿" aria-label="Biểu tượng tuỳ chọn">
+        </label>
+      </div>
+      <div class="mt-3">
+        <label class="block text-xs font-semibold text-slate-600" for="categoryColor">Màu nhận diện
+          <input id="categoryColor" type="color" value="#0ea5e9" class="mt-1 h-[42px] w-full rounded-xl border border-slate-200 bg-white px-1">
+        </label>
+      </div>
+      <p id="categoryPreview" class="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-600"></p>
+
+      <div id="categoryFormMessage" class="mt-3 hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+      <div class="mt-4 flex gap-2">
+        <button id="cancelCategoryModal" type="button" class="flex-1 rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-bold text-slate-700">Hủy</button>
+        <button id="categorySubmit" type="submit" class="flex-1 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-800 disabled:opacity-60">Lưu</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ===================== MODAL: PHẢN HỒI CỦA TÔI (thiết bị này) ===================== -->
+  <div id="myFeedbackModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="myFeedbackTitle">
+    <div class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <h2 id="myFeedbackTitle" class="text-lg font-bold text-slate-900">Phản hồi tôi đã gửi</h2>
+          <p class="mt-1 text-xs text-slate-500">Chỉ hiển thị trên thiết bị này. Dùng thiết bị khác sẽ không thấy các lần gửi này.</p>
+        </div>
+        <button id="closeMyFeedback" type="button" aria-label="Đóng" class="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">×</button>
+      </div>
+      <p id="myFeedbackSummary" class="mt-3 rounded-xl bg-teal-50 p-2.5 text-xs font-semibold text-teal-900"></p>
+      <div id="myFeedbackList" class="mt-3 space-y-2" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL: SỬA TÀI KHOẢN CÁN BỘ ===================== -->
+  <div id="editAccountModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="editAccountTitle">
+    <form id="editAccountForm" class="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" novalidate>
+      <div class="flex items-start justify-between">
+        <div>
+          <h2 id="editAccountTitle" class="text-lg font-bold text-slate-900">Sửa thông tin cán bộ</h2>
+          <p id="editAccountMeta" class="mt-1 text-xs text-slate-500"></p>
+        </div>
+        <button id="closeEditAccount" type="button" aria-label="Đóng" class="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">×</button>
+      </div>
+
+      <label class="mt-4 block text-xs font-semibold text-slate-600" for="editAccountName">Họ tên cán bộ <span class="text-red-600">*</span>
+        <input id="editAccountName" required minlength="3" maxlength="80"
+               class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600">
+      </label>
+      <label class="mt-3 block text-xs font-semibold text-slate-600" for="editAccountWard">Phường / Xã phụ trách <span class="text-red-600">*</span>
+        <select id="editAccountWard" required class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-teal-600"></select>
+      </label>
+      <p class="mt-1 text-[11px] text-amber-700">Đổi địa bàn sẽ chuyển luôn phạm vi duyệt phản hồi của cán bộ này.</p>
+
+      <div id="editAccountMessage" class="mt-3 hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+      <div class="mt-4 flex gap-2">
+        <button id="cancelEditAccount" type="button" class="flex-1 rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-bold text-slate-700">Hủy</button>
+        <button id="editAccountSubmit" type="submit" class="flex-1 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-800 disabled:opacity-60">Lưu thay đổi</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ===================== MODAL: ĐẶT LẠI MẬT KHẨU ===================== -->
+  <div id="resetPasswordModal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="resetPasswordTitle">
+    <form id="resetPasswordForm" class="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl" novalidate>
+      <div class="flex items-start justify-between">
+        <div>
+          <h2 id="resetPasswordTitle" class="text-lg font-bold text-slate-900">Đặt lại mật khẩu cán bộ</h2>
+          <p id="resetPasswordMeta" class="mt-1 text-xs text-slate-500"></p>
+        </div>
+        <button id="closeResetPassword" type="button" aria-label="Đóng" class="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200">×</button>
+      </div>
+
+      <div class="mt-4 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+        <p><span class="font-semibold">Tên đăng nhập:</span> <span id="resetPasswordUsername" class="font-mono">—</span></p>
+        <p class="mt-1"><span class="font-semibold">Họ tên:</span> <span id="resetPasswordName">—</span></p>
+      </div>
+
+      <label class="mt-3 block text-xs font-semibold text-slate-600" for="resetPasswordInput">Mật khẩu mới <span class="text-red-600">*</span>
+        <input id="resetPasswordInput" name="newPassword" type="text" required minlength="8" maxlength="72" autocomplete="new-password"
+               class="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-mono text-sm focus:border-teal-600" placeholder="Tối thiểu 8 ký tự">
+      </label>
+      <p class="mt-1 text-[11px] text-slate-500">Mật khẩu được mã hóa (scrypt) trước khi lưu. Hãy gửi mật khẩu này cho cán bộ qua kênh nội bộ.</p>
+      <label class="mt-3 flex items-start gap-2 text-xs font-semibold text-slate-600">
+        <input id="resetMustChange" type="checkbox" checked class="mt-0.5 h-4 w-4 rounded border-slate-300">
+        <span>Bắt buộc đổi mật khẩu ở lần đăng nhập tiếp theo</span>
+      </label>
+
+      <div id="resetPasswordMessage" class="mt-3 hidden rounded-xl p-3 text-sm" role="status" aria-live="polite"></div>
+      <div class="mt-4 flex gap-2">
+        <button id="cancelResetPassword" type="button" class="flex-1 rounded-xl bg-slate-100 px-4 py-2.5 text-sm font-bold text-slate-700">Hủy</button>
+        <button id="resetPasswordSubmit" type="submit" class="flex-1 rounded-xl bg-teal-700 px-4 py-2.5 text-sm font-bold text-white hover:bg-teal-800 disabled:opacity-60">Xác nhận cập nhật</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="toast" class="pointer-events-none fixed bottom-6 left-1/2 z-[2000] hidden -translate-x-1/2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-xl" role="status" aria-live="polite"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/js/khanhHoa-web.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

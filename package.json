@@ -1,0 +1,84 @@
+{
+  "name": "khanh-hoa-love-map",
+  "productName": "BanDoYeuThuongKhanhHoa",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Bản đồ Yêu thương Khánh Hòa - ứng dụng desktop (Electron) với phân quyền Cấp Tỉnh và Cán bộ Xã/Phường",
+  "main": "main.js",
+  "type": "module",
+  "author": "Khánh Hòa Community Map",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "start:web": "node server.js",
+    "start:web:dev": "node --watch server.js",
+    "sync:web": "node scripts/sync-web.mjs",
+    "check:web": "node scripts/check-web.mjs",
+    "test:web": "node scripts/e2e-web.mjs",
+    "test": "node --test \"tests/unit/*.test.js\"",
+    "test:watch": "node --test --watch \"tests/unit/*.test.js\"",
+    "icon": "node scripts/generate-icon.mjs",
+    "dist": "electron-builder --win --x64",
+    "dist:dir": "electron-builder --win --x64 --dir"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^25.1.8",
+    "express": "^5.3.0",
+    "socket.io": "^4.8.4",
+    "socket.io-client": "^4.8.4"
+  },
+  "build": {
+    "appId": "vn.khanhhoa.lovemap",
+    "productName": "BanDoYeuThuongKhanhHoa",
+    "copyright": "Copyright © 2026 Khánh Hòa Community Map",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "index.html",
+      "app.js",
+      "src/**/*",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bản đồ Yêu thương Khánh Hòa",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
+    }
+  }
+}

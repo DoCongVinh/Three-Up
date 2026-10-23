@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>Người dân gửi phản hồi — Bản đồ Yêu thương Khánh Hòa</title>
+  <style>
+    :root { --teal: #0f766e; --teal-dark: #115e59; --slate: #0f172a; --muted: #64748b; --line: #e2e8f0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, "Segoe UI", sans-serif; background: #f1f5f9; color: var(--slate); }
+    header { background: var(--teal); color: #fff; padding: 14px 20px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { font-size: 17px; margin: 0; font-weight: 700; flex: 1; }
+    header a { color: #ccfbf1; font-size: 13px; text-decoration: none; }
+    main { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+    .card { background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 1px 3px rgba(15, 23, 42, .08); margin-bottom: 18px; }
+    .card h2 { margin: 0 0 4px; font-size: 16px; }
+    .card p.hint { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+    .grid { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+    @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    input, select, textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 14px; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { background: var(--teal); color: #fff; border: 0; border-radius: 8px; padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: progress; }
+    button.secondary { background: #e2e8f0; color: var(--slate); }
+    .error { color: #b91c1c; font-size: 13px; margin-top: 8px; white-space: pre-line; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .pill.waiting { background: #fef3c7; color: #92400e; }
+    .pill.confirmed { background: #dcfce7; color: #166534; }
+    .pill.rejected { background: #fee2e2; color: #991b1b; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    #myFeedbacks { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    #myFeedbacks li { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+    #myFeedbacks .content { font-size: 14px; margin: 6px 0; }
+    #myFeedbacks .meta { font-size: 12px; color: var(--muted); }
+    .toast { position: fixed; right: 16px; bottom: 16px; max-width: 340px; background: #0f172a; color: #fff; border-radius: 12px; padding: 12px 14px; font-size: 14px; box-shadow: 0 10px 25px rgba(0,0,0,.25); opacity: 0; transform: translateY(10px); transition: .25s; pointer-events: none; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .socket-state { font-size: 12px; color: #ccfbf1; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏠 Người dân gửi phản hồi</h1>
+    <span class="socket-state" id="socketState">Socket: đang kết nối…</span>
+    <a href="/officer.html">Trang cán bộ →</a>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Gửi phản hồi tới cán bộ phường/xã</h2>
+      <p class="hint">Phản hồi được lưu vào SQLite và hiện ngay trên máy cán bộ.</p>
+      <form id="feedbackForm">
+        <div class="grid">
+          <div><label for="fullName">Họ và tên</label><input id="fullName" name="fullName" required value="Nguyễn Văn An"></div>
+          <div><label for="phone">Số điện thoại</label><input id="phone" name="phone" required value="0905123456"></div>
+          <div><label for="email">Email</label><input id="email" name="email" type="email" required value="an.nguyen@example.com"></div>
+          <div><label for="category">Nhóm thông tin</label><select id="category" name="category"></select></div>
+          <div><label for="wardId">Phường/Xã</label><select id="wardId" name="wardId"></select></div>
+          <div><label for="hamlet">Thôn/Tổ dân phố</label><select id="hamlet" name="hamlet"></select></div>
+        </div>
+        <div style="margin-top:12px"><label for="address">Địa chỉ chi tiết</label><input id="address" name="address" required value="12 Trần Phú"></div>
+        <div style="margin-top:12px"><label for="reason">Nội dung / lý do</label><textarea id="reason" name="reason" required>Cần hỗ trợ gạo và nước uống cho 5 hộ gia đình khó khăn trong tổ dân phố.</textarea></div>
+        <div class="grid" style="margin-top:12px">
+          <div><label for="lat">Vĩ độ (lat)</label><input id="lat" name="lat" value="12.2451"></div>
+          <div><label for="lng">Kinh độ (lng)</label><input id="lng" name="lng" value="109.1943"></div>
+        </div>
+        <p class="error" id="formError" hidden></p>
+        <div style="margin-top:14px"><button type="submit" id="submitBtn">Gửi phản hồi</button></div>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Phản hồi của tôi</h2>
+      <p class="hint">Trạng thái tự cập nhật khi cán bộ bấm xác nhận (không cần tải lại trang).</p>
+      <ul id="myFeedbacks"><li class="meta">Chưa có phản hồi nào từ thiết bị này.</li></ul>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- 1) Client Socket.io do chính server.js phục vụ -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/khanhHoa-web.js"></script>
+  <script src="/js/socket-citizen.js"></script>
+</body>
+</html>
