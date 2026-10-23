@@ -248,8 +248,29 @@ export function createWebApp(options = {}) {
   app.get("/api/auth/me", requireUser, (_req, res) => res.json({ ok: true, user: _req.user }));
   app.post("/api/auth/change-password", requireUser, (req, res) => res.json(service.changePassword({ ...req.body, sessionId: req.sessionId })));
 
-  /* Public data directories: exact store administrative hierarchy. */
+  /* Public data directories: exact SQLite/DataStore administrative hierarchy. */
   app.get("/api/regions", (_req, res) => res.json({ ok: true, regions: store.regions(), categories: store.categories() }));
+  app.get("/api/accounts/list", requireUser, (req, res) => {
+    const result = service.listAccounts({ sessionId: req.sessionId });
+    if (!result.ok) return res.status(result.code === "FORBIDDEN" ? 403 : 401).json({ ...result, error: result.errors?.[0] });
+    return res.json(result);
+  });
+  app.get("/api/directories", requireUser, (req, res) => {
+    const result = service.directory({ sessionId: req.sessionId });
+    if (!result.ok) return res.status(result.code === "FORBIDDEN" ? 403 : 401).json({ ...result, error: result.errors?.[0] });
+    return res.json(result);
+  });
+  app.get("/api/directory/statistics", requireUser, (req, res) => {
+    // Cùng dữ liệu thống kê và cùng phạm vi phân quyền như IPC directory:statistics.
+    const result = service.directory({ sessionId: req.sessionId });
+    if (!result.ok) return res.status(result.code === "FORBIDDEN" ? 403 : 401).json({ ...result, error: result.errors?.[0] });
+    return res.json(result);
+  });
+  app.post("/api/profile/update", requireUser, (req, res) => {
+    const result = service.updateProfile({ sessionId: req.sessionId, displayName: req.body?.displayName });
+    if (!result.ok) return res.status(result.code === "UNAUTHENTICATED" ? 401 : 400).json({ ...result, error: result.errors?.[0] });
+    return res.json(result);
+  });
   app.get("/api/wards", (_req, res) => res.json({ ok: true, wards: service.wards() }));
   app.get("/api/wards/:id", (req, res) => {
     const ward = findWardInUnits(store.regions(), req.params.id);

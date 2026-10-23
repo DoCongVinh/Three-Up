@@ -191,7 +191,9 @@
     "regions:units": () => request("/regions"),
     "directory:regions": () => request("/rpc/directory:regions", { method: "POST", body: {} }),
     "directory:wards": () => request("/wards"),
-    "directory:statistics": (payload) => request("/rpc/directory:statistics", { method: "POST", body: payload, auth: true }),
+    "directory:statistics": (payload = {}) => request(`/directory/statistics${payload.regionId ? `?regionId=${encodeURIComponent(payload.regionId)}` : ""}`, { auth: true }),
+    "accounts:list": () => request("/accounts/list", { auth: true }),
+    "profile:update": (payload) => request("/profile/update", { method: "POST", body: payload, auth: true }),
     "categories:list": () => request("/categories"),
     "categories:create": (payload) => request("/rpc/categories:create", { method: "POST", body: payload, auth: true }),
     "categories:update": (payload) => request("/rpc/categories:update", { method: "POST", body: payload, auth: true }),
@@ -205,7 +207,7 @@
     "image:url": (payload) => request("/rpc/image:url", { method: "POST", body: payload }),
     "app:info": () => request("/health"),
     "dashboard:summary": (payload) => request("/rpc/dashboard:summary", { method: "POST", body: payload, auth: true }),
-    "accounts:list": (payload) => request("/rpc/accounts:list", { method: "POST", body: payload, auth: true }),
+
     "accounts:create": (payload) => request("/rpc/accounts:create", { method: "POST", body: payload, auth: true }),
     "accounts:setActive": (payload) => request("/rpc/accounts:setActive", { method: "POST", body: payload, auth: true }),
     "accounts:update": (payload) => request("/rpc/accounts:update", { method: "POST", body: payload, auth: true }),
@@ -215,7 +217,7 @@
     "notifications:readAll": (payload) => request("/rpc/notifications:readAll", { method: "POST", body: payload, auth: true }),
     "notifications:remindReviewers": (payload) => request("/rpc/notifications:remindReviewers", { method: "POST", body: payload, auth: true }),
     "notifications:requestUpdate": (payload) => request("/rpc/notifications:requestUpdate", { method: "POST", body: payload, auth: true }),
-    "profile:update": (payload) => request("/rpc/profile:update", { method: "POST", body: payload, auth: true }),
+
     "image:url": (payload) => request("/rpc/image:url", { method: "POST", body: payload }),
   };
 
